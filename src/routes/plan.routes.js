@@ -8,13 +8,15 @@ const {
   getMyPlans,
   getPlansForStudent,
   updateItemStatus,
+  updateItemProgress,
 } = require('../controllers/plan.controller');
 
 router.use(authenticate);
 
-// این دو مسیر فقط برای دانش‌آموز است
+// این سه مسیر فقط برای دانش‌آموز است
 router.get('/mine', requireRole('STUDENT'), getMyPlans);
 router.patch('/items/:id/status', requireRole('STUDENT'), updateItemStatus);
+router.patch('/items/:id/progress', requireRole('STUDENT'), updateItemProgress);
 
 // این چهار مسیر فقط برای مشاور است
 router.post('/', requireRole('ADVISOR', 'SUPERADMIN'), createPlan);

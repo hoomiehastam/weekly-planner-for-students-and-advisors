@@ -140,6 +140,13 @@ model PlanItem {
   order       Int        @default(0)
   status      ItemStatus @default(PENDING)
 
+  // --- فیلدهای ثبت‌شده‌ی دانش‌آموز ---
+  // زمانی که دانش‌آموز این آیتم را انجام داد، می‌تواند تعداد دقیقه‌ی واقعی و تعداد تست
+  // که زده را وارد کند. این اطلاعات برای آمار دقیق‌تر از ساعت برنامه‌ریزی‌شده استفاده می‌شود.
+  // null یعنی هنوز ثبت نشده.
+  actualMinutes Int?     // تعداد دقیقه‌ای که واقعاً مطالعه کرده
+  testsTaken    Int?     // تعداد تست‌هایی که در این بازه زده
+
   day         PlanDay    @relation(fields: [dayId], references: [id], onDelete: Cascade)
   tags        PlanItemTag[]
 

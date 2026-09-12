@@ -22,6 +22,16 @@ function validateDayOfWeek(value) {
   return n;
 }
 
+// اعتبارسنجی عدد صحیح مثبت یا null
+function validateNullableInt(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error('مقدار باید عدد صحیح مثبت باشد');
+  }
+  return n;
+}
+
 // یک برنامه‌ی مطالعاتی جدید می‌سازد؛ همراه با روزها و آیتم‌ها و تگ‌ها
 // بدنه‌ی درخواست:
 //   { title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, description?, startTime?, endTime?, tags: [tagId] }] }] }
@@ -84,8 +94,8 @@ async function createPlan(req, res, next) {
 
 // ویرایش کامل یک برنامه‌ی موجود:
 //  - عنوان، توضیح، بازه‌ی زمانی به‌روز می‌شود
-//  - روزها و آیتم‌ها به‌صورت جایگزینی کامل (replace) ذخیره می‌شوند تا منطق ساده‌تر باشد
-//  - آیتم‌هایی که در درخواست شناسه دارند، وضعیتشان حفظ می‌شود
+//  - روزها و آیتم‌ها به‌صورت جایگزینی کامل (replace) ذخیره می‌شوند
+//  - برای آیتم‌هایی که شناسه دارند، وضعیت و مقادیر ثبت‌شده‌ی دانش‌آموز (actualMinutes، testsTaken) حفظ می‌شود
 async function updatePlan(req, res, next) {
   try {
     const { id } = req.params;
@@ -113,15 +123,16 @@ async function updatePlan(req, res, next) {
     }
 
     // مرحله‌ی ۲: اگر days ارسال شده، کل روزها و آیتم‌ها را جایگزین می‌کنیم
-    // این روش ساده‌تر است چون از مقایسه‌ی پیچیده‌ی آیتم‌به‌آیتم جلوگیری می‌کند
+    // اما برای حفظ داده‌های دانش‌آموز، همه‌ی فیلدهای قدیمی را نگه می‌داریم:
+    //   - status (وضعیت انجام‌شده)
+    //   - actualMinutes (دقیقه‌ی واقعی مطالعه)
+    //   - testsTaken (تعداد تست‌های زده‌شده)
     if (Array.isArray(days)) {
-      // اول وضعیت فعلی همه‌ی آیتم‌ها را نگه می‌داریم تا بتوانیم آیتم‌هایی که در درخواست
-      // شناسه دارند و وضعیتشان DONE است را بعد از جایگزینی بازگردانیم
       const oldItems = await prisma.planItem.findMany({
         where: { day: { planId: id } },
-        select: { id: true, status: true },
+        select: { id: true, status: true, actualMinutes: true, testsTaken: true },
       });
-      const oldStatusById = new Map(oldItems.map((it) => [it.id, it.status]));
+      const oldDataById = new Map(oldItems.map((it) => [it.id, it]));
 
       // پاک کردن همه‌ی روزها و آیتم‌های قبلی (cascade از PlanDay به PlanItem و PlanItemTag)
       await prisma.planDay.deleteMany({ where: { planId: id } });
@@ -142,9 +153,16 @@ async function updatePlan(req, res, next) {
                       startTime: validateTime(it.startTime),
                       endTime: validateTime(it.endTime),
                       order: typeof it.order === 'number' ? it.order : idx,
-                      // اگر آیتم شناسه داشت و در درخواست قبل DONE بوده، همان وضعیت را حفظ کن
-                      status: it.id && oldStatusById.has(it.id) ? oldStatusById.get(it.id) : 'PENDING',
                     };
+
+                    // اگر آیتم شناسه داشت و هنوز موجود است، وضعیت و مقادیر دانش‌آموز را حفظ کن
+                    if (it.id && oldDataById.has(it.id)) {
+                      const old = oldDataById.get(it.id);
+                      data.status = old.status;
+                      data.actualMinutes = old.actualMinutes;
+                      data.testsTaken = old.testsTaken;
+                    }
+
                     if (Array.isArray(it.tags) && it.tags.length > 0) {
                       data.tags = {
                         create: it.tags.map((tagId) => ({ tagId })),
@@ -242,6 +260,45 @@ async function updateItemStatus(req, res, next) {
   }
 }
 
+// دانش‌آموز می‌تواند تعداد دقیقه‌ی واقعی مطالعه و تعداد تست‌های زده‌شده را برای یک آیتم ثبت کند
+// بدنه‌ی درخواست: { actualMinutes?, testsTaken? }
+// اگر مقدار null ارسال شود، فیلد پاک می‌شود.
+async function updateItemProgress(req, res, next) {
+  try {
+    const { id } = req.params;
+    const { actualMinutes, testsTaken } = req.body;
+
+    // اعتبارسنجی: حداقل یکی از دو فیلد باید ارسال شده باشد
+    if (actualMinutes === undefined && testsTaken === undefined) {
+      return res.status(400).json({ error: 'حداقل یکی از actualMinutes یا testsTaken را ارسال کن' });
+    }
+
+    const item = await prisma.planItem.findFirst({
+      where: { id, day: { plan: { studentId: req.user.id } } },
+    });
+    if (!item) {
+      return res.status(404).json({ error: 'آیتم یافت نشد' });
+    }
+
+    const data = {};
+    if (actualMinutes !== undefined) {
+      data.actualMinutes = validateNullableInt(actualMinutes);
+    }
+    if (testsTaken !== undefined) {
+      data.testsTaken = validateNullableInt(testsTaken);
+    }
+
+    const updated = await prisma.planItem.update({
+      where: { id },
+      data,
+    });
+
+    res.json({ item: updated });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // حذف یک برنامه‌ی مطالعاتی (فقط مشاور صاحب برنامه یا سوپرادمین)
 async function deletePlan(req, res, next) {
   try {
@@ -281,5 +338,6 @@ module.exports = {
   getMyPlans,
   getPlansForStudent,
   updateItemStatus,
+  updateItemProgress,
   deletePlan,
 };
