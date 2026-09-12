@@ -21,6 +21,7 @@ app.use('/api/quotes', require('./routes/quote.routes'));
 app.use('/api/students', require('./routes/student.routes'));
 app.use('/api/reminders', require('./routes/reminder.routes'));
 app.use('/api/notifications', require('./routes/notification.routes'));
+app.use('/api/study-logs', require('./routes/studyLog.routes'));
 
 // هندلر ۴۰۴ برای مسیرهای تعریف‌نشده
 app.use((req, res) => {
