@@ -1,0 +1,178 @@
+// مدل دیتابیس پلتفرم برنامه‌ریزی مطالعاتی کنکور
+// همه‌ی مدل‌ها اینجا تعریف می‌شوند تا Prisma Client بتواند با آن‌ها کار کند.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// --- نقش‌ها و وضعیت‌های کاربر ---
+enum UserRole {
+  STUDENT
+  ADVISOR
+  SUPERADMIN
+}
+
+enum UserStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+}
+
+// --- وضعیت انجام یک آیتم درسی در طول هفته ---
+enum ItemStatus {
+  PENDING
+  DONE
+  SKIPPED
+}
+
+// کاربر می‌تواند دانش‌آموز، مشاور یا سوپرادمین باشد
+model User {
+  id              String     @id @default(cuid())
+  fullName        String
+  email           String     @unique
+  passwordHash    String
+  role            UserRole   @default(STUDENT)
+  status          UserStatus @default(PENDING)
+  // زمان آخرین بازدید دانش‌آموز از برنامه‌اش؛ برای محاسبه‌ی «برنامه‌های تغییرکرده» استفاده می‌شود
+  plansLastViewedAt DateTime? @default(now())
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  // روابط مشاور ↔ دانش‌آموز
+  asAdvisorLinks  AdvisorStudentLink[] @relation("AdvisorSide")
+  asStudentLinks  AdvisorStudentLink[] @relation("StudentSide")
+
+  // برنامه‌هایی که این کاربر به‌عنوان مشاور ساخته
+  plansAsAdvisor   StudyPlan[]  @relation("PlanAdvisor")
+  // برنامه‌هایی که این کاربر به‌عنوان دانش‌آموز دریافت کرده
+  plansAsStudent   StudyPlan[]  @relation("PlanStudent")
+
+  // تگ‌های شخصی مشاور
+  tags            Tag[]
+
+  // یادآورهایی که فرستاده یا دریافت کرده
+  remindersSent   Reminder[]   @relation("ReminderAdvisor")
+  remindersReceived Reminder[] @relation("ReminderStudent")
+}
+
+// اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
+model AdvisorStudentLink {
+  id        String   @id @default(cuid())
+  advisorId String
+  studentId String
+  createdAt DateTime @default(now())
+  // هدف ساعت مطالعه‌ی هفتگی که مشاور برای این دانش‌آموز تعیین می‌کند (به دقیقه)
+  // null یعنی هنوز هدفی تعیین نشده
+  weeklyGoalMinutes Int?
+
+  advisor   User     @relation("AdvisorSide",  fields: [advisorId],  references: [id], onDelete: Cascade)
+  student   User     @relation("StudentSide", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([advisorId, studentId])
+  @@index([advisorId])
+  @@index([studentId])
+}
+
+// تگ‌های درسی؛ یا پیش‌فرض و سراسری‌اند یا شخصی برای یک مشاور
+model Tag {
+  id        String   @id @default(cuid())
+  name      String
+  isDefault Boolean  @default(false)
+  advisorId String?
+
+  advisor   User?    @relation(fields: [advisorId], references: [id], onDelete: Cascade)
+  items     PlanItemTag[]
+
+  @@index([advisorId])
+}
+
+// برنامه‌ی مطالعاتی که مشاور برای یک دانش‌آموز می‌سازد
+model StudyPlan {
+  id        String    @id @default(cuid())
+  title     String
+  // توضیح کلی برنامه؛ اختیاری است
+  note      String?
+  studentId String
+  advisorId String
+  // بازه‌ی زمانی برنامه
+  startsAt  DateTime
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  student   User      @relation("PlanStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor   User      @relation("PlanAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  days      PlanDay[]
+
+  @@index([studentId])
+  @@index([advisorId])
+}
+
+// هر روز از هفته در یک برنامه؛ روز هفته ۰ تا ۶ (شنبه تا جمعه) است
+model PlanDay {
+  id        String     @id @default(cuid())
+  planId    String
+  dayOfWeek Int        // ۰=شنبه، ۱=یک‌شنبه، ... ۶=جمعه
+
+  plan      StudyPlan  @relation(fields: [planId], references: [id], onDelete: Cascade)
+  items     PlanItem[]
+
+  @@unique([planId, dayOfWeek])
+  @@index([planId])
+}
+
+// یک آیتم درسی در یک روز؛ شامل ساعت شروع و پایان است
+model PlanItem {
+  id          String     @id @default(cuid())
+  dayId       String
+  subject     String
+  description String?
+  // ساعت شروع و پایان این بازه‌ی درسی، با فرمت "HH:MM" (مثل "08:30")
+  // به‌صورت رشته ذخیره می‌شود تا نمایش فارسی و محاسبه‌ی ساده‌تر باشد
+  startTime   String?
+  endTime     String?
+  // ترتیب نمایش آیتم‌ها در یک روز
+  order       Int        @default(0)
+  status      ItemStatus @default(PENDING)
+
+  day         PlanDay    @relation(fields: [dayId], references: [id], onDelete: Cascade)
+  tags        PlanItemTag[]
+
+  @@index([dayId])
+}
+
+// اتصال many-to-many بین آیتم و تگ
+model PlanItemTag {
+  id     String   @id @default(cuid())
+  itemId String
+  tagId  String
+
+  item   PlanItem @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  tag    Tag      @relation(fields: [tagId],  references: [id], onDelete: Cascade)
+
+  @@unique([itemId, tagId])
+  @@index([itemId])
+  @@index([tagId])
+}
+
+// یادآور متنی که مشاور برای دانش‌آموز می‌فرستد
+model Reminder {
+  id         String   @id @default(cuid())
+  advisorId  String
+  studentId  String
+  message    String
+  // زمان خوانده‌شدن یادآور توسط دانش‌آموز؛ null یعنی هنوز نخوانده
+  readAt     DateTime?
+  createdAt   DateTime @default(now())
+
+  advisor     User     @relation("ReminderAdvisor", fields: [advisorId],  references: [id], onDelete: Cascade)
+  student     User     @relation("ReminderStudent", fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([studentId])
+  @@index([advisorId])
+}

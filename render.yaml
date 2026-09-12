@@ -1,0 +1,42 @@
+# تنظیمات زیرساخت برای Render
+# این فایل توسط Render هنگام دیپلوی خوانده می‌شود.
+# نکته: در حال حاضر سرویس‌ها از قبل روی Render ساخته شده‌اند، پس این فایل
+# بیشتر برای مستندسازی و دیپلوی مجدد (در صورت نیاز) استفاده می‌شود.
+
+services:
+  - type: web
+    # نام سرویس بک‌اند واقعی روی Render
+    name: weekly-planner-for-students-and-advisors
+    runtime: node
+    plan: free
+    # نصب وابستگی‌ها و تولید Prisma Client
+    buildCommand: npm install && npx prisma generate
+    # اعمال migration ها و سپس اجرای سرور
+    startCommand: npx prisma migrate deploy && npm start
+    envVars:
+      # آدرس دیتابیس داخلی Render (به‌صورت خودکار از سرویس دیتابیس خوانده می‌شود)
+      - key: DATABASE_URL
+        fromDatabase:
+          name: example_71x6
+          property: connectionString
+      # راز JWT به‌صورت خودکار تولید می‌شود
+      - key: JWT_SECRET
+        generateValue: true
+      # مدت اعتبار توکن
+      - key: JWT_EXPIRES_IN
+        value: 7d
+      # پورت سرور (Render این مقدار را هنگام اجرا override می‌کند)
+      - key: PORT
+        value: 4000
+      # (اختیاری) ساخت سوپرادمین اولیه هنگام اجرای seed
+      - key: SUPERADMIN_EMAIL
+        value: admin@konkur.local
+      - key: SUPERADMIN_PASSWORD
+        sync: false  # مقدار را به‌صورت دستی در Dashboard وارد کن
+
+databases:
+  # دیتابیس PostgreSQL واقعی روی Render
+  - name: example_71x6
+    plan: free
+    databaseName: example_71x6
+    user: example_71x6_user
