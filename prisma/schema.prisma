@@ -142,6 +142,15 @@ model PlanItem {
   order       Int        @default(0)
   status      ItemStatus @default(PENDING)
 
+  // --- فیلدهای ثبت‌شده‌ی دانش‌آموز (روش قدیمی per-item) ---
+  // زمانی که دانش‌آموز این آیتم را انجام داد، می‌تواند تعداد دقیقه‌ی واقعی و تعداد تست
+  // که زده را وارد کند. این اطلاعات برای آمار دقیق‌تر از ساعت برنامه‌ریزی‌شده استفاده می‌شود.
+  // null یعنی هنوز ثبت نشده.
+  // نکته: در نسخه‌ی ۷، ثبت per-tag با PlanItemLog اضافه شد، اما این فیلدها هم حفظ شده‌اند
+  // تا هم backward-compatible باشد و هم امکان ثبت سریع per-item را بدهد.
+  actualMinutes Int?     // تعداد دقیقه‌ای که واقعاً مطالعه کرده
+  testsTaken    Int?     // تعداد تست‌هایی که در این بازه زده
+
   day         PlanDay    @relation(fields: [dayId], references: [id], onDelete: Cascade)
   tags        PlanItemTag[]
   // لاگ‌های per-tag که دانش‌آموز برای این آیتم ثبت کرده
