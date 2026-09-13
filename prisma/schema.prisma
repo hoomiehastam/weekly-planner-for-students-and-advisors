@@ -58,9 +58,6 @@ model User {
   // یادآورهایی که فرستاده یا دریافت کرده
   remindersSent   Reminder[]   @relation("ReminderAdvisor")
   remindersReceived Reminder[] @relation("ReminderStudent")
-
-  // لاگ‌های مطالعه‌ای که دانش‌آموز ثبت کرده (بر اساس تگ)
-  studyLogs       StudyLog[]   @relation("StudyLogStudent")
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
@@ -90,7 +87,8 @@ model Tag {
 
   advisor   User?    @relation(fields: [advisorId], references: [id], onDelete: Cascade)
   items     PlanItemTag[]
-  studyLogs StudyLog[]
+  // لاگ‌های per-tag درون آیتم‌ها
+  itemLogs  PlanItemLog[]
 
   @@index([advisorId])
 }
@@ -144,15 +142,10 @@ model PlanItem {
   order       Int        @default(0)
   status      ItemStatus @default(PENDING)
 
-  // --- فیلدهای ثبت‌شده‌ی دانش‌آموز ---
-  // زمانی که دانش‌آموز این آیتم را انجام داد، می‌تواند تعداد دقیقه‌ی واقعی و تعداد تست
-  // که زده را وارد کند. این اطلاعات برای آمار دقیق‌تر از ساعت برنامه‌ریزی‌شده استفاده می‌شود.
-  // null یعنی هنوز ثبت نشده.
-  actualMinutes Int?     // تعداد دقیقه‌ای که واقعاً مطالعه کرده
-  testsTaken    Int?     // تعداد تست‌هایی که در این بازه زده
-
   day         PlanDay    @relation(fields: [dayId], references: [id], onDelete: Cascade)
   tags        PlanItemTag[]
+  // لاگ‌های per-tag که دانش‌آموز برای این آیتم ثبت کرده
+  itemLogs    PlanItemLog[]
 
   @@index([dayId])
 }
@@ -171,6 +164,34 @@ model PlanItemTag {
   @@index([tagId])
 }
 
+// لاگ per-tag برای یک آیتم درسی.
+// دانش‌آموز برای هر تگ اختصاص‌داده‌شده به یک درس، می‌تواند زمان و تعداد تست ثبت کند.
+// اگر tagId برابر null باشد یعنی «سایر کارها» — یعنی زمانی که برای این درس صرف شده
+// ولی در تگ مشخصی جای نمی‌گیرد (کار اضافه روی این درس).
+// testsTaken معمولاً فقط برای تگ «تمرین» در UI وارد می‌شود، اما در دیتابیس برای هر لاگ قابل ثبت است.
+model PlanItemLog {
+  id          String   @id @default(cuid())
+  planItemId  String
+  // null یعنی «سایر کارها» برای این آیتم
+  tagId       String?
+  // تعداد دقیقه‌ای که برای این تگ/کار در این آیتم صرف شده
+  minutes     Int
+  // تعداد تست‌های زده‌شده (در UI فقط برای تگ «تمرین» وارد می‌شود)
+  testsTaken  Int?
+  // توضیح اختیاری، مخصوصاً برای «سایر کارها»
+  note        String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  planItem    PlanItem @relation(fields: [planItemId], references: [id], onDelete: Cascade)
+  tag         Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
+
+  // نکته: یکتایی (planItemId, tagId) در سطح اپلیکیشن هندل می‌شود، نه در سطح دیتابیس،
+  // چون tagId می‌تواند null باشد و در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
+  @@index([planItemId])
+  @@index([tagId])
+}
+
 // یادآور متنی که مشاور برای دانش‌آموز می‌فرستد
 model Reminder {
   id         String   @id @default(cuid())
@@ -186,30 +207,4 @@ model Reminder {
 
   @@index([studentId])
   @@index([advisorId])
-}
-
-// لاگ مطالعه‌ی دانش‌آموز بر اساس تگ؛ برای ثبت زمانی که برای هر تگ صرف شده.
-// اگر tagId برابر null باشد یعنی کارهایی خارج از تگ‌های تعریف‌شده (سایر کارها).
-// testsTaken فقط برای تگ «تمرین» در UI وارد می‌شود، اما در دیتابیس برای هر لاگ قابل ثبت است.
-model StudyLog {
-  id         String   @id @default(cuid())
-  studentId  String
-  // null یعنی «سایر کارها» — کارهایی که در هیچ تگ مشخصی جای نمی‌گیرند
-  tagId      String?
-  // تاریخی که این زمان برایش ثبت شده (فقط تاریخ، بدون ساعت)
-  logDate    DateTime
-  // تعداد دقیقه‌ای که برای این تگ/کار صرف شده
-  minutes    Int
-  // تعداد تست‌های زده‌شده (در UI فقط برای تگ «تمرین» وارد می‌شود)
-  testsTaken Int?
-  // توضیح اختیاری، مخصوصاً برای «سایر کارها»
-  note       String?
-  createdAt  DateTime @default(now())
-
-  student    User     @relation("StudyLogStudent", fields: [studentId], references: [id], onDelete: Cascade)
-  tag        Tag?     @relation(fields: [tagId], references: [id], onDelete: SetNull)
-
-  @@index([studentId])
-  @@index([tagId])
-  @@index([logDate])
 }

@@ -326,11 +326,131 @@ const PLAN_INCLUDE = {
     include: {
       items: {
         orderBy: { order: 'asc' },
-        include: { tags: { include: { tag: true } } },
+        include: {
+          tags: { include: { tag: true } },
+          itemLogs: { include: { tag: true } },
+        },
       },
     },
   },
 };
+
+// ============================================================
+// لاگ‌های per-tag برای آیتم‌های درسی
+// ============================================================
+
+// ذخیره یا به‌روزرسانی لاگ per-tag برای یک آیتم درسی.
+// دانش‌آموز برای هر تگ (یا «سایر» با tagId=null) می‌تواند دقیقه و تعداد تست ثبت کند.
+// اگر لاگی برای این (itemId, tagId) از قبل وجود داشته باشد، به‌روزرسانی می‌شود؛
+// در غیر این‌صورت ساخته می‌شود (upsert).
+// بدنه‌ی درخواست:
+//   { tagId?: string|null, minutes: number, testsTaken?: number|null, note?: string }
+async function setItemTagLog(req, res, next) {
+  try {
+    const { id } = req.params; // شناسه‌ی PlanItem
+    const { tagId = null, minutes, testsTaken = null, note = null } = req.body;
+
+    const mins = Number(minutes);
+    if (!Number.isInteger(mins) || mins < 0 || mins > 1440) {
+      return res.status(400).json({ error: 'دقیقه باید عدد صحیح بین ۰ و ۱۴۴۰ باشد' });
+    }
+
+    // اطمینان از اینکه آیتم متعلق به این دانش‌آموز است
+    const item = await prisma.planItem.findFirst({
+      where: { id, day: { plan: { studentId: req.user.id } } },
+    });
+    if (!item) {
+      return res.status(404).json({ error: 'آیتم یافت نشد' });
+    }
+
+    // اگر tagId ارسال شده، مطمئن شو این تگ واقعاً به این آیتم اختصاص دارد
+    if (tagId) {
+      const tagLink = await prisma.planItemTag.findUnique({
+        where: { itemId_tagId: { itemId: id, tagId } },
+      });
+      if (!tagLink) {
+        return res.status(400).json({ error: 'این تگ به این درس اختصاص ندارد' });
+      }
+    }
+
+    // اعتبارسنجی testsTaken
+    let testsValue = null;
+    if (testsTaken !== null && testsTaken !== undefined && testsTaken !== '') {
+      const t = Number(testsTaken);
+      if (!Number.isInteger(t) || t < 0) {
+        return res.status(400).json({ error: 'تعداد تست باید عدد صحیح مثبت باشد' });
+      }
+      testsValue = t;
+    }
+
+    // upsert: اگر لاگی برای این (itemId, tagId) هست، به‌روزرسانی کن؛ وگرنه بساز
+    // نکته: از findFirst استفاده می‌کنیم چون tagId می‌تواند null باشد و
+    // در PostgreSQL NULL در unique constraint متمایز محسوب می‌شود.
+    const existing = await prisma.planItemLog.findFirst({
+      where: { planItemId: id, tagId: tagId || null },
+    });
+
+    let log;
+    if (existing) {
+      // اگر دقیقه ۰ ارسال شد، لاگ را حذف کن
+      if (mins === 0) {
+        await prisma.planItemLog.delete({ where: { id: existing.id } });
+        return res.json({ log: null, deleted: true });
+      }
+      log = await prisma.planItemLog.update({
+        where: { id: existing.id },
+        data: {
+          minutes: mins,
+          testsTaken: testsValue,
+          note: note ? String(note).trim().slice(0, 280) : null,
+        },
+        include: { tag: true },
+      });
+    } else {
+      if (mins === 0) {
+        // چیزی برای حذف نیست
+        return res.json({ log: null, deleted: false });
+      }
+      log = await prisma.planItemLog.create({
+        data: {
+          planItemId: id,
+          tagId: tagId || null,
+          minutes: mins,
+          testsTaken: testsValue,
+          note: note ? String(note).trim().slice(0, 280) : null,
+        },
+        include: { tag: true },
+      });
+    }
+
+    res.json({ log });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// حذف لاگ per-tag برای یک آیتم درسی
+async function deleteItemTagLog(req, res, next) {
+  try {
+    const { id } = req.params; // شناسه‌ی PlanItem
+    const { tagId } = req.body; // tagId که لاگ آن باید حذف شود (null برای «سایر»)
+
+    const item = await prisma.planItem.findFirst({
+      where: { id, day: { plan: { studentId: req.user.id } } },
+    });
+    if (!item) {
+      return res.status(404).json({ error: 'آیتم یافت نشد' });
+    }
+
+    await prisma.planItemLog.deleteMany({
+      where: { planItemId: id, tagId: tagId || null },
+    });
+
+    res.json({ message: 'لاگ حذف شد' });
+  } catch (err) {
+    next(err);
+  }
+}
 
 module.exports = {
   createPlan,
@@ -340,4 +460,6 @@ module.exports = {
   updateItemStatus,
   updateItemProgress,
   deletePlan,
+  setItemTagLog,
+  deleteItemTagLog,
 };
