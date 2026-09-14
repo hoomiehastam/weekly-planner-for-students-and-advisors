@@ -266,4 +266,77 @@ async function login(req, res, next) {
   }
 }
 
-module.exports = { register, login };
+// کاربر می‌تواند اطلاعات پروفایل خودش را ویرایش کند
+// محدودیت‌ها بر اساس نقش:
+//   - STUDENT: فقط phone و bio قابل ویرایش است (نام قابل تغییر نیست تا از مسخره‌بازی جلوگیری شود)
+//   - ADVISOR و SUPERADMIN: fullName، phone و bio قابل ویرایش است
+async function updateMyProfile(req, res, next) {
+  try {
+    const { fullName, phone, bio } = req.body;
+    const role = req.user.role;
+
+    const data = {};
+
+    // فقط مشاور و سوپرادمین می‌توانند نام خود را تغییر دهند
+    // دانش‌آموز نمی‌تواند نامش را تغییر دهد (برای جلوگیری از مسخره‌بازی)
+    if (fullName !== undefined) {
+      if (role === 'STUDENT') {
+        return res.status(403).json({
+          error: 'دانش‌آموز نمی‌تواند نام خود را تغییر دهد. در صورت نیاز، با مشاور یا سوپرادمین تماس بگیرید.',
+        });
+      }
+      const trimmedName = String(fullName).trim();
+      if (trimmedName.length < 2) {
+        return res.status(400).json({ error: 'نام باید حداقل ۲ کاراکتر باشد' });
+      }
+      if (trimmedName.length > 100) {
+        return res.status(400).json({ error: 'نام نباید بیشتر از ۱۰۰ کاراکتر باشد' });
+      }
+      data.fullName = trimmedName;
+    }
+
+    // phone برای همه‌ی نقش‌ها قابل ویرایش است
+    if (phone !== undefined) {
+      try {
+        data.phone = normalizePhone(phone);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    // bio برای همه‌ی نقش‌ها قابل ویرایش است
+    if (bio !== undefined) {
+      try {
+        data.bio = normalizeBio(bio);
+      } catch (err) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'هیچ فیلدی برای به‌روزرسانی ارسال نشده' });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        role: true,
+        phone: true,
+        bio: true,
+      },
+    });
+
+    res.json({
+      message: 'پروفایل به‌روزرسانی شد',
+      user: updated,
+    });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { register, login, updateMyProfile };
