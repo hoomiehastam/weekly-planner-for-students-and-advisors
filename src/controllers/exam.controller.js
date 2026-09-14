@@ -52,8 +52,11 @@ async function createExam(req, res, next) {
       if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) {
         return res.status(400).json({ error: `نوع سؤال ${i + 1} معتبر نیست` });
       }
-      if (!q.text || !q.text.trim()) {
-        return res.status(400).json({ error: `متن سؤال ${i + 1} الزامی است` });
+      // متن یا عکس حداقل یکی باید باشد
+      const hasText = q.text && q.text.trim();
+      const hasImage = q.imageUrl && q.imageUrl.trim();
+      if (!hasText && !hasImage) {
+        return res.status(400).json({ error: `سؤال ${i + 1} باید متن یا عکس داشته باشد` });
       }
       if (q.type === 'MULTIPLE_CHOICE') {
         if (!q.options || typeof q.options !== 'string') {
@@ -83,10 +86,11 @@ async function createExam(req, res, next) {
         questions: {
           create: questions.map((q, idx) => ({
             type: q.type,
-            text: q.text.trim(),
+            text: q.text ? q.text.trim() : null,
             options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
             correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
             points: typeof q.points === 'number' ? q.points : 1,
+            imageUrl: q.imageUrl || null,
             order: idx,
           })),
         },
@@ -155,15 +159,17 @@ async function updateExam(req, res, next) {
         for (let i = 0; i < questions.length; i++) {
           const q = questions[i];
           if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) continue;
-          if (!q.text) continue;
+          // متن یا عکس حداقل یکی باید باشد
+          if (!q.text && !q.imageUrl) continue;
           await prisma.examQuestion.create({
             data: {
               examId: id,
               type: q.type,
-              text: q.text.trim(),
+              text: q.text ? q.text.trim() : null,
               options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
               correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
               points: typeof q.points === 'number' ? q.points : 1,
+              imageUrl: q.imageUrl || null,
               order: i,
             },
           });
@@ -244,6 +250,7 @@ async function getMyExams(req, res, next) {
             options: true,
             points: true,
             order: true,
+            imageUrl: true,
           },
         },
         submissions: {

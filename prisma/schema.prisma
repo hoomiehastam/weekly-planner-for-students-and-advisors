@@ -282,13 +282,17 @@ model ExamQuestion {
   id          String       @id @default(cuid())
   examId      String
   type        QuestionType
-  text        String       // متن سؤال
+  // متن سؤال — اگر عکس آپلود شود، اختیاری است
+  text        String?
   // برای سؤالات تستی: گزینه‌ها با | جدا می‌شوند. مثلاً "گزینه ۱|گزینه ۲|گزینه ۳|گزینه ۴"
   options     String?
   // برای سؤالات تستی: شماره گزینه‌ی صحیح (۱ تا ۴). برای تشریحی null.
   correctOption Int?
   // نمره‌ی این سؤال (مثلاً ۱ یا ۲)
   points      Int          @default(1)
+  // آدرس عکس سؤال (اختیاری) — می‌تواند صورت سؤال یا ضمیمه باشد
+  // عکس در کلاینت به base64 تبدیل و مستقیم در دیتابیس ذخیره می‌شود
+  imageUrl    String?
   order       Int          @default(0)
 
   exam        Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
