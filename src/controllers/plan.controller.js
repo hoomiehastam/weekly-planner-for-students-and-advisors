@@ -127,12 +127,13 @@ async function updatePlan(req, res, next) {
     //   - status (وضعیت انجام‌شده)
     //   - actualMinutes (دقیقه‌ی واقعی مطالعه)
     //   - testsTaken (تعداد تست‌های زده‌شده)
+    //   - itemLogs (لاگ‌های per-tag) — این‌ها با cascade حذف روزها پاک می‌شوند،
+    //     پس باید برای آیتم‌هایی که شناسه‌ی قدیمی خودشان را دارند بازسازی شوند
     if (Array.isArray(days)) {
       const oldItems = await prisma.planItem.findMany({
         where: { day: { planId: id } },
-        select: { id: true, status: true, actualMinutes: true, testsTaken: true },
+        select: { id: true, status: true, actualMinutes: true, testsTaken: true, itemLogs: true },
       });
-      const oldDataById = new Map(oldItems.map((it) => [it.id, it]));
 
       // پاک کردن همه‌ی روزها و آیتم‌های قبلی (cascade از PlanDay به PlanItem و PlanItemTag)
       await prisma.planDay.deleteMany({ where: { planId: id } });
@@ -161,6 +162,18 @@ async function updatePlan(req, res, next) {
                       data.status = old.status;
                       data.actualMinutes = old.actualMinutes;
                       data.testsTaken = old.testsTaken;
+                      // بازسازی لاگ‌های per-tag؛ چون حذف cascade همه را پاک کرده
+                      if (Array.isArray(old.itemLogs) && old.itemLogs.length > 0) {
+                        data.itemLogs = {
+                          create: old.itemLogs.map((log) => ({
+                            tagId: log.tagId,
+                            minutes: log.minutes,
+                            testsTaken: log.testsTaken,
+                            note: log.note,
+                            createdAt: log.createdAt,
+                          })),
+                        };
+                      }
                     }
 
                     if (Array.isArray(it.tags) && it.tags.length > 0) {

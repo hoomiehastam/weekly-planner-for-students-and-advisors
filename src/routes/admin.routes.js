@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth.middleware');
+const { adminLimiter } = require('../middleware/rateLimit');
 const {
   listPendingAdvisors,
   approveAdvisor,
@@ -9,7 +10,7 @@ const {
 } = require('../controllers/admin.controller');
 
 // همه‌ی مسیرهای این فایل فقط برای سوپرادمین و بعد از ورود در دسترس هستند
-router.use(authenticate, requireRole('SUPERADMIN'));
+router.use(authenticate, requireRole('SUPERADMIN'), adminLimiter);
 
 router.get('/advisors/pending', listPendingAdvisors);
 router.post('/advisors/:id/approve', approveAdvisor);

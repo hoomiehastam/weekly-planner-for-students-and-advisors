@@ -339,4 +339,4 @@ async function updateMyProfile(req, res, next) {
   }
 }
 
-module.exports = { register, login, updateMyProfile };
+module.exports = { register, login, updateMyProfile, normalizePhone, normalizeBio };
