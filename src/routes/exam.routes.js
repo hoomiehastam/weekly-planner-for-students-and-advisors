@@ -1,0 +1,33 @@
+const express = require('express');
+const router = express.Router();
+const { authenticate, requireRole } = require('../middleware/auth.middleware');
+const {
+  createExam,
+  updateExam,
+  deleteExam,
+  getExamsForStudent,
+  getMyExams,
+  startExam,
+  saveAnswer,
+  submitExam,
+  getExamSubmissions,
+  gradeSubmission,
+} = require('../controllers/exam.controller');
+
+router.use(authenticate);
+
+// ====== مسیرهای مشاور ======
+router.post('/', requireRole('ADVISOR', 'SUPERADMIN'), createExam);
+router.put('/:id', requireRole('ADVISOR', 'SUPERADMIN'), updateExam);
+router.delete('/:id', requireRole('ADVISOR', 'SUPERADMIN'), deleteExam);
+router.get('/student/:studentId', requireRole('ADVISOR', 'SUPERADMIN'), getExamsForStudent);
+router.get('/:examId/submissions', requireRole('ADVISOR', 'SUPERADMIN'), getExamSubmissions);
+router.put('/submissions/:id/grade', requireRole('ADVISOR', 'SUPERADMIN'), gradeSubmission);
+
+// ====== مسیرهای دانش‌آموز ======
+router.get('/mine', requireRole('STUDENT'), getMyExams);
+router.post('/:id/start', requireRole('STUDENT'), startExam);
+router.post('/submissions/:id/save', requireRole('STUDENT'), saveAnswer);
+router.post('/submissions/:id/submit', requireRole('STUDENT'), submitExam);
+
+module.exports = router;

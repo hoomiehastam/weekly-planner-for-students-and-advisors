@@ -65,6 +65,13 @@ model User {
   // یادآورهایی که فرستاده یا دریافت کرده
   remindersSent   Reminder[]   @relation("ReminderAdvisor")
   remindersReceived Reminder[] @relation("ReminderStudent")
+
+  // آزمون‌هایی که به‌عنوان مشاور ساخته
+  examsCreated    Exam[]  @relation("ExamAdvisor")
+  // آزمون‌هایی که به‌عنوان دانش‌آموز دریافت کرده
+  examsAssigned   Exam[]  @relation("ExamStudent")
+  // ارسال‌های آزمون دانش‌آموز
+  examSubmissions ExamSubmission[] @relation("ExamSubmissionStudent")
 }
 
 // اتصال یک به چند بین مشاور و دانش‌آموز؛ دانش‌آموز فقط یک مشاور دارد
@@ -223,4 +230,113 @@ model Reminder {
 
   @@index([studentId])
   @@index([advisorId])
+}
+
+// --- بخش آزمون‌ها ---
+
+// نوع سؤال آزمون
+enum QuestionType {
+  MULTIPLE_CHOICE  // تستی (چهارگزینه‌ای)
+  DESCRIPTIVE      // تشریحی
+}
+
+// وضعیت یک ارسال آزمون توسط دانش‌آموز
+enum SubmissionStatus {
+  IN_PROGRESS  // شروع‌شده ولی هنوز ارسال نهایی نشده
+  SUBMITTED    // ارسال نهایی شده
+  GRADED       // نمره داده شده
+}
+
+// آزمونی که مشاور برای یک دانش‌آموز (یا همه‌ی دانش‌آموزهایش) می‌سازد
+model Exam {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  studentId   String   // دانش‌آموزی که آزمون برای اوست
+  advisorId   String   // مشاوری که آزمون را ساخته
+  // روز و زمان شروع آزمون
+  scheduledAt DateTime
+  // مدت آزمون به دقیقه
+  durationMinutes Int
+  // آیا آزمون برای دانش‌آموز نمایش داده شود؟
+  // اگر false باشد، آزمون تا زمان مشخص (scheduledAt) مخفی است
+  visibleToStudent Boolean @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  student    User     @relation("ExamStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  advisor    User     @relation("ExamAdvisor", fields: [advisorId], references: [id], onDelete: Cascade)
+  questions  ExamQuestion[]
+  submissions ExamSubmission[]
+
+  @@index([studentId])
+  @@index([advisorId])
+  @@index([scheduledAt])
+}
+
+// سؤال آزمون
+model ExamQuestion {
+  id          String       @id @default(cuid())
+  examId      String
+  type        QuestionType
+  text        String       // متن سؤال
+  // برای سؤالات تستی: گزینه‌ها با | جدا می‌شوند. مثلاً "گزینه ۱|گزینه ۲|گزینه ۳|گزینه ۴"
+  options     String?
+  // برای سؤالات تستی: شماره گزینه‌ی صحیح (۱ تا ۴). برای تشریحی null.
+  correctOption Int?
+  // نمره‌ی این سؤال (مثلاً ۱ یا ۲)
+  points      Int          @default(1)
+  order       Int          @default(0)
+
+  exam        Exam         @relation(fields: [examId], references: [id], onDelete: Cascade)
+  answers     ExamAnswer[]
+
+  @@index([examId])
+}
+
+// ارسال آزمون توسط دانش‌آموز — یک آزمون می‌تواند چند ارسال داشته باشد
+// (مثلاً اگر دانش‌آموز دوباره امتحان دهد، ولی معمولاً یکی است)
+model ExamSubmission {
+  id          String           @id @default(cuid())
+  examId      String
+  studentId   String
+  status      SubmissionStatus  @default(IN_PROGRESS)
+  // نمره‌ی کلی که مشاور داده (برای تشریحی)
+  totalScore  Float?
+  // حداکثر نمره‌ی ممکن
+  maxScore    Float?
+  // توضیح مشاور در مورد ارسال
+  feedback    String?
+  startedAt   DateTime         @default(now())
+  submittedAt DateTime?
+  gradedAt    DateTime?
+
+  exam        Exam             @relation(fields: [examId], references: [id], onDelete: Cascade)
+  student     User             @relation("ExamSubmissionStudent", fields: [studentId], references: [id], onDelete: Cascade)
+  answers     ExamAnswer[]
+
+  @@index([examId])
+  @@index([studentId])
+}
+
+// پاسخ دانش‌آموز به یک سؤال
+model ExamAnswer {
+  id           String   @id @default(cuid())
+  submissionId String
+  questionId   String
+  // برای تستی: شماره گزینه‌ی انتخاب‌شده (۱ تا ۴). برای تشریحی null.
+  selectedOption Int?
+  // برای تشریحی: متن پاسخ دانش‌آموز. برای تستی null.
+  textAnswer   String?
+  // نمره‌ی این پاسخ (برای تشریحی، مشاور می‌دهد؛ برای تستی، خودکار محاسبه می‌شود)
+  score        Float?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  submission   ExamSubmission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  question     ExamQuestion   @relation(fields: [questionId], references: [id], onDelete: Cascade)
+
+  @@unique([submissionId, questionId])
+  @@index([submissionId])
+  @@index([questionId])
 }
