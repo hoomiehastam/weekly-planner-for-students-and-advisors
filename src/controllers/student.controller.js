@@ -1,11 +1,22 @@
 const prisma = require('../config/prisma');
 
 // فهرست دانش‌آموزهایی که به همین مشاور متصل هستند
+// شامل شماره تماس و توضیحات دانش‌آموز تا مشاور بتواند با او ارتباط برقرار کند
 async function listMyStudents(req, res, next) {
   try {
     const links = await prisma.advisorStudentLink.findMany({
       where: { advisorId: req.user.id },
-      include: { student: { select: { id: true, fullName: true, email: true } } },
+      include: {
+        student: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            bio: true,
+          },
+        },
+      },
       orderBy: { createdAt: 'desc' },
     });
     // هدف هفتگی هم در پاسخ برمی‌گردد تا فرانت‌اند بلافاصله نمایش دهد
@@ -66,4 +77,31 @@ async function setStudentWeeklyGoal(req, res, next) {
   }
 }
 
-module.exports = { listMyStudents, getMyWeeklyGoal, setStudentWeeklyGoal };
+// دریافت اطلاعات مشاور دانش‌آموز (نام، ایمیل، شماره تماس، توضیحات)
+// تا دانش‌آموز بتواند با مشاورش ارتباط برقرار کند
+async function getMyAdvisor(req, res, next) {
+  try {
+    const link = await prisma.advisorStudentLink.findFirst({
+      where: { studentId: req.user.id },
+      include: {
+        advisor: {
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            phone: true,
+            bio: true,
+          },
+        },
+      },
+    });
+    if (!link) {
+      return res.status(404).json({ error: 'هنوز مشاوری به شما متصل نشده' });
+    }
+    res.json({ advisor: link.advisor });
+  } catch (err) {
+    next(err);
+  }
+}
+
+module.exports = { listMyStudents, getMyWeeklyGoal, setStudentWeeklyGoal, getMyAdvisor };

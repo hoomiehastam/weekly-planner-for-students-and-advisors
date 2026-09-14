@@ -1,11 +1,16 @@
 const prisma = require('../config/prisma');
 
 // این فهرست بدون نیاز به ورود در دسترس است، چون دانش‌آموز باید قبل از ثبت‌نام مشاورش را انتخاب کند
+// شامل توضیحات کوتاه مشاور تا دانش‌آموز با آگاهی انتخاب کند
 async function listActiveAdvisors(req, res, next) {
   try {
     const advisors = await prisma.user.findMany({
       where: { role: { in: ['ADVISOR', 'SUPERADMIN'] }, status: 'ACTIVE' },
-      select: { id: true, fullName: true },
+      select: {
+        id: true,
+        fullName: true,
+        bio: true,
+      },
       orderBy: { fullName: 'asc' },
     });
     res.json({ advisors });

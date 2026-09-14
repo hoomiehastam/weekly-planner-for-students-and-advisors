@@ -1,11 +1,19 @@
 const prisma = require('../config/prisma');
 
 // فهرست مشاورانی که هنوز منتظر تایید هستند
+// شامل شماره تماس و توضیحات تا سوپرادمین با آگاهی کامل تصمیم بگیرد
 async function listPendingAdvisors(req, res, next) {
   try {
     const advisors = await prisma.user.findMany({
       where: { role: 'ADVISOR', status: 'PENDING' },
-      select: { id: true, fullName: true, email: true, createdAt: true },
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        phone: true,
+        bio: true,
+        createdAt: true,
+      },
       orderBy: { createdAt: 'asc' },
     });
     res.json({ advisors });
@@ -57,6 +65,7 @@ async function rejectAdvisor(req, res, next) {
 }
 
 // نمای کلی سوپرادمین: هر مشاور و تعداد دانش‌آموزانش
+// شامل شماره تماس مشاور و دانش‌آموزان برای ارتباط
 async function listAdvisorsOverview(req, res, next) {
   try {
     const advisors = await prisma.user.findMany({
@@ -65,9 +74,18 @@ async function listAdvisorsOverview(req, res, next) {
         id: true,
         fullName: true,
         email: true,
+        phone: true,
+        bio: true,
         asAdvisorLinks: {
           select: {
-            student: { select: { id: true, fullName: true, email: true } },
+            student: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                phone: true,
+              },
+            },
           },
         },
       },

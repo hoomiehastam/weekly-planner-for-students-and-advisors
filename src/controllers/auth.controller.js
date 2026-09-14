@@ -4,10 +4,35 @@ const { generateToken } = require('../utils/jwt');
 
 const SALT_ROUNDS = 10;
 
+// نرمال‌سازی شماره تماس: حذف فاصله‌ها و کاراکترهای اضافی، فقط اعداد و + در ابتدا
+function normalizePhone(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  // اگر با + شروع شد، فقط اعداد بعدش را نگه دار؛ در غیر این‌صورت فقط اعداد را نگه دار
+  const cleaned = trimmed.replace(/[^\d+]/g, '');
+  // حداقل طول منطقی برای شماره تلفن
+  if (cleaned.length < 6) {
+    throw new Error('شماره تماس معتبر نیست');
+  }
+  return cleaned;
+}
+
+// اعتبارسنجی ساده‌ی توضیحات: محدود به ۵۰۰ کاراکتر
+function normalizeBio(value) {
+  if (!value) return null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  if (trimmed.length > 500) {
+    throw new Error('توضیحات نباید بیشتر از ۵۰۰ کاراکتر باشد');
+  }
+  return trimmed;
+}
+
 // ثبت‌نام کاربر جدید. دانش‌آموز بلافاصله فعال می‌شود، مشاور منتظر تایید سوپرادمین می‌ماند
 async function register(req, res, next) {
   try {
-    const { fullName, email, password, role, advisorId } = req.body;
+    const { fullName, email, password, role, advisorId, phone, bio } = req.body;
 
     if (!fullName || !email || !password || !role) {
       return res.status(400).json({ error: 'همه‌ی فیلدها الزامی هستند' });
@@ -20,6 +45,16 @@ async function register(req, res, next) {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
       return res.status(409).json({ error: 'این ایمیل قبلاً ثبت شده است' });
+    }
+
+    // نرمال‌سازی شماره تماس و توضیحات
+    let phoneValue = null;
+    let bioValue = null;
+    try {
+      phoneValue = normalizePhone(phone);
+      bioValue = normalizeBio(bio);
+    } catch (err) {
+      return res.status(400).json({ error: err.message });
     }
 
     // دانش‌آموز باید حتماً یک مشاور فعال را انتخاب کند
@@ -42,7 +77,15 @@ async function register(req, res, next) {
     const status = role === 'STUDENT' ? 'ACTIVE' : 'PENDING';
 
     const user = await prisma.user.create({
-      data: { fullName, email, passwordHash, role, status },
+      data: {
+        fullName,
+        email,
+        passwordHash,
+        role,
+        status,
+        phone: phoneValue,
+        bio: bioValue,
+      },
     });
 
     if (role === 'STUDENT') {
@@ -99,7 +142,13 @@ async function login(req, res, next) {
     const token = generateToken(user);
     return res.json({
       token,
-      user: { id: user.id, fullName: user.fullName, role: user.role },
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        role: user.role,
+        phone: user.phone,
+        bio: user.bio,
+      },
     });
   } catch (err) {
     next(err);
