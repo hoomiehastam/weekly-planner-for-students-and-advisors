@@ -6,18 +6,24 @@ const SALT_ROUNDS = 10;
 
 // پیام راهنمای فرمت‌های قابل قبول شماره تماس ایران
 const PHONE_FORMAT_HINT =
-  'فرمت‌های قابل قبول: ۰۹۱۲۳۴۵۶۷۸۹، +۹۸۹۱۲۳۴۵۶۷۸۹، ۰۰۹۸۹۱۲۳۴۵۶۷۸۹، ۹۱۲۳۴۵۶۷۸۹';
+  'فرمت‌های قابل قبول:\n' +
+  '• موبایل با ۰: ۰۹۱۲۳۴۵۶۷۸۹ (۱۱ رقم)\n' +
+  '• موبایل بدون ۰: ۹۱۲۳۴۵۶۷۸۹ (۱۰ رقم)\n' +
+  '• با کد کشور: +۹۸۹۱۲۳۴۵۶۷۸۹ یا ۰۰۹۸۹۱۲۳۴۵۶۷۸۹\n' +
+  '• ثابت با ۰: ۰۲۱۱۲۳۴۵۶۷۸ (۱۱ رقم)';
 
 // نرمال‌سازی شماره تماس بر اساس فرمت ایران
-// فرمت‌های قابل قبول:
-//   09123456789      (موبایل با ۰)
-//   9123456789       (موبایل بدون ۰)
-//   +989123456789    (با کد کشور +)
-//   00989123456789   (با کد کشور ۰۰)
-//   989123456789     (با کد کشور بدون +)
-//   02112345678      (ثابت با ۰)
-//   2112345678       (ثابت بدون ۰)
-// خروجی همیشه به فرمت 09123456789 یا 02112345678 (با ۰ شروع می‌شود)
+// برخلاف نسخه‌ی قبلی، به‌جای یک چک کلیِ طول، هر فرمت را جداگانه اعتبارسنجی می‌کند
+// و در صورت خطا، دقیقاً می‌گوید کدام فرمت با چه مشکلی روبه‌رو شده.
+//
+// فرمت‌های قابل قبول و محدودیت‌های هرکدام:
+//   1. 09XXXXXXXXX   — ۱۱ رقم، شروع با ۰، ششمین رقم ۹ (موبایل) یا غیر ۹ (ثابت)
+//   2. 9XXXXXXXXX    — ۱۰ رقم، شروع با ۹ (موبایل بدون ۰)
+//   3. +989XXXXXXXXX — +۹۸ + ۱۰ رقم شروع با ۹ (موبایل بین‌المللی)
+//   4. +98XXXXXXXXX  — +۹۸ + ۱۰ رقم شروع با کد شهر (ثابت بین‌المللی)
+//   5. 00989XXXXXXXXX — ۰۰۹۸ + ۱۰ رقم (بین‌المللی با ۰۰۹۸)
+//   6. 989XXXXXXXXX  — ۹۸ + ۱۰ رقم (بدون +)
+//   7. XXXXXXXXXX     — ۱۰ رقم، شروع با کد شهر (ثابت بدون ۰)
 function normalizePhone(value) {
   if (!value) return null;
   const trimmed = String(value).trim();
@@ -35,54 +41,92 @@ function normalizePhone(value) {
     else normalized += ch;
   }
 
-  // حذف همه‌ی کاراکترهای غیر عددی (فاصله، خط تیره، پرانتز و ...)
-  // فقط + در ابتدا را نگه می‌داریم
-  let hasPlus = normalized.startsWith('+');
-  let digits = normalized.replace(/[^\d]/g, '');
+  // تشخیص وجود + در ابتدا و استخراج فقط اعداد
+  const hasPlus = normalized.startsWith('+');
+  const digits = normalized.replace(/[^\d]/g, '');
 
   if (digits.length === 0) {
     throw new Error('شماره تماس خالی است. ' + PHONE_FORMAT_HINT);
   }
 
-  // مدیریت پیشوندهای کد کشور ایران (۹۸)
+  let result;
+
+  // ---------- فرمت‌های با کد کشور ----------
   if (hasPlus) {
-    // +989123456789 → 09123456789
-    if (digits.startsWith('98')) {
-      digits = '0' + digits.slice(2);
-    } else {
-      throw new Error('شماره با + شروع شده ولی کد کشور ۹۸ نیست. ' + PHONE_FORMAT_HINT);
+    // +989XXXXXXXXX یا +98XXXXXXXXX
+    if (!digits.startsWith('98')) {
+      throw new Error(
+        'شماره با + شروع شده ولی کد کشور ۹۸ نیست. ' + PHONE_FORMAT_HINT
+      );
     }
+    const nationalPart = digits.slice(2); // بعد از 98
+    if (nationalPart.length !== 10) {
+      throw new Error(
+        `شماره با +۹۸ باید ۱۰ رقم بعد از کد کشور داشته باشد، ولی ${toFa(nationalPart.length)} رقم وارد شده. ` +
+        PHONE_FORMAT_HINT
+      );
+    }
+    // nationalPart باید یا با 9 شروع شود (موبایل) یا با کد شهر (ثابت)
+    // در هر دو حالت، خروجی 0 + nationalPart است
+    result = '0' + nationalPart;
   } else if (digits.startsWith('0098')) {
-    // 00989123456789 → 09123456789
-    digits = '0' + digits.slice(4);
+    // 00989XXXXXXXXX یا 0098XXXXXXXXX
+    const nationalPart = digits.slice(4); // بعد از 0098
+    if (nationalPart.length !== 10) {
+      throw new Error(
+        `شماره با ۰۰۹۸ باید ۱۰ رقم بعد از کد کشور داشته باشد، ولی ${toFa(nationalPart.length)} رقم وارد شده. ` +
+        PHONE_FORMAT_HINT
+      );
+    }
+    result = '0' + nationalPart;
   } else if (digits.startsWith('98') && digits.length === 12) {
-    // 989123456789 (12 رقم با 98 شروع می‌شود) → 09123456789
-    digits = '0' + digits.slice(2);
-  } else if (digits.length === 10 && digits.startsWith('9')) {
-    // 9123456789 (موبایل بدون ۰) → 09123456789
-    digits = '0' + digits;
-  } else if (digits.length === 10 && !digits.startsWith('0')) {
-    // 2112345678 (ثابت بدون ۰) → 02112345678
-    digits = '0' + digits;
+    // 989XXXXXXXXX (بدون +، ۱۲ رقم)
+    const nationalPart = digits.slice(2);
+    if (nationalPart.length !== 10) {
+      throw new Error(
+        `شماره با ۹۸ باید ۱۰ رقم بعد از کد کشور داشته باشد. ` + PHONE_FORMAT_HINT
+      );
+    }
+    result = '0' + nationalPart;
   }
-  // در غیر این‌صورت، اگر با ۰ شروع شده باشد همان را نگه می‌داریم
-
-  // اعتبارسنجی نهایی: باید ۱۱ رقم و با ۰ شروع شود
-  if (digits.length !== 11 || !digits.startsWith('0')) {
-    throw new Error('شماره تماس معتبر نیست. ' + PHONE_FORMAT_HINT);
+  // ---------- فرمت‌های داخلی ----------
+  else if (digits.startsWith('0')) {
+    // 0XXXXXXXXX — باید دقیقاً ۱۱ رقم باشد
+    if (digits.length !== 11) {
+      throw new Error(
+        `شماره با ۰ باید ۱۱ رقم باشد، ولی ${toFa(digits.length)} رقم وارد شده. ` +
+        PHONE_FORMAT_HINT
+      );
+    }
+    result = digits;
+  } else if (digits.startsWith('9') && digits.length === 10) {
+    // 9XXXXXXXXX — موبایل بدون ۰
+    result = '0' + digits;
+  } else if (digits.length === 10) {
+    // XXXXXXXXXX — ثابت بدون ۰ (شروع با کد شهر مثل 21، 31، ...)
+    result = '0' + digits;
+  } else {
+    // هیچ فرمت شناخته‌شده‌ای تطابق نکرد
+    throw new Error(
+      `شماره تماس با هیچ فرمت قابل قبولی تطابق ندارد (${toFa(digits.length)} رقم). ` +
+      PHONE_FORMAT_HINT
+    );
   }
 
-  // اعتبارسنجی پیشوندهای معتبر ایران:
-  // موبایل: 09 + (1,0,3,2,9) — مثلاً 0912, 0910, 0935, 0920, 0990
-  // ثابت: 0 + کد شهر — مثلاً 021 (تهران), 031 (اصفهان), 026 (کرج), 051 (مشهد)
-  const mobilePattern = /^09\d{9}$/;       // 09123456789
-  const landlinePattern = /^0\d{10}$/;    // 02112345678 (هر 11 رقمی با 0)
-
-  if (!mobilePattern.test(digits) && !landlinePattern.test(digits)) {
-    throw new Error('شماره تماس فرمت معتبری ندارد. ' + PHONE_FORMAT_HINT);
+  // اعتبارسنجی نهایی خروجی: باید ۱۱ رقم و با ۰ شروع شود
+  if (result.length !== 11 || !result.startsWith('0')) {
+    throw new Error(
+      'خروجی نرمال‌سازی معتبر نیست. ' + PHONE_FORMAT_HINT
+    );
   }
 
-  return digits;
+  return result;
+}
+
+// تبدیل اعداد انگلیسی به فارسی برای پیام‌های خطا
+function toFa(n) {
+  const FA = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  return String(n).replace(/[0-9]/g, (d) => FA[Number(d)]);
 }
 
 // اعتبارسنجی ساده‌ی توضیحات: محدود به ۵۰۰ کاراکتر
