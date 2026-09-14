@@ -21,6 +21,7 @@ async function createExam(req, res, next) {
       scheduledAt,
       durationMinutes,
       visibleToStudent = false,
+      visibleFrom,
       questions = [],
     } = req.body;
 
@@ -77,6 +78,8 @@ async function createExam(req, res, next) {
         scheduledAt: new Date(scheduledAt),
         durationMinutes: mins,
         visibleToStudent: !!visibleToStudent,
+        // اگر visibleToStudent=false و visibleFrom ارسال شده، از آن استفاده کن؛ در غیر این‌صورت null (از scheduledAt استفاده می‌شود)
+        visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
         questions: {
           create: questions.map((q, idx) => ({
             type: q.type,
@@ -107,6 +110,7 @@ async function updateExam(req, res, next) {
       scheduledAt,
       durationMinutes,
       visibleToStudent,
+      visibleFrom,
       questions,
     } = req.body;
 
@@ -136,6 +140,9 @@ async function updateExam(req, res, next) {
       data.durationMinutes = mins;
     }
     if (visibleToStudent !== undefined) data.visibleToStudent = !!visibleToStudent;
+    if (visibleFrom !== undefined) {
+      data.visibleFrom = visibleFrom ? new Date(visibleFrom) : null;
+    }
 
     if (Object.keys(data).length > 0) {
       await prisma.exam.update({ where: { id }, data });
@@ -224,19 +231,12 @@ async function getExamsForStudent(req, res, next) {
 async function getMyExams(req, res, next) {
   try {
     const now = new Date();
-    const exams = await prisma.exam.findMany({
-      where: {
-        studentId: req.user.id,
-        OR: [
-          { visibleToStudent: true },
-          // اگر visibleToStudent=false ولی زمان شروع فرا رسیده، نمایش بده
-          { visibleToStudent: false, scheduledAt: { lte: now } },
-        ],
-      },
+    // همه‌ی آزمون‌های دانش‌آموز را می‌گیریم و در JS فیلتر می‌کنیم، چون منطق visibility پیچیده است
+    const allExams = await prisma.exam.findMany({
+      where: { studentId: req.user.id },
       include: {
         questions: {
           orderBy: { order: 'asc' },
-          // گزینه‌ی صحیح برای دانش‌آموز ارسال نمی‌شود
           select: {
             id: true,
             type: true,
@@ -252,6 +252,16 @@ async function getMyExams(req, res, next) {
         },
       },
       orderBy: { scheduledAt: 'desc' },
+    });
+
+    // فیلتر visibility:
+    // - اگر visibleToStudent=true → همیشه نمایش بده
+    // - اگر visibleToStudent=false و visibleFrom=null → فقط اگه scheduledAt <= now
+    // - اگر visibleToStudent=false و visibleFrom!=null → فقط اگه visibleFrom <= now
+    const exams = allExams.filter((exam) => {
+      if (exam.visibleToStudent) return true;
+      const showTime = exam.visibleFrom || exam.scheduledAt;
+      return showTime <= now;
     });
 
     res.json({ exams });
@@ -277,10 +287,22 @@ async function startExam(req, res, next) {
       return res.status(403).json({ error: 'این آزمون متعلق به شما نیست' });
     }
 
-    // بررسی visibility
+    // بررسی visibility برای نمایش (مخفی بودن)
     const now = new Date();
-    if (!exam.visibleToStudent && exam.scheduledAt > now) {
-      return res.status(403).json({ error: 'این آزمون هنوز در دسترس نیست' });
+    if (!exam.visibleToStudent) {
+      const showTime = exam.visibleFrom || exam.scheduledAt;
+      if (showTime > now) {
+        return res.status(403).json({ error: 'این آزمون هنوز در دسترس نیست' });
+      }
+    }
+
+    // بررسی اینکه زمان شروع آزمون فرا رسیده باشد — حتی اگه visible=true،
+    // دانش‌آموز نمی‌تواند قبل از scheduledAt شروع کند
+    if (exam.scheduledAt > now) {
+      return res.status(403).json({
+        error: 'زمان شروع آزمون هنوز فرا نرسیده است',
+        scheduledAt: exam.scheduledAt,
+      });
     }
 
     // بررسی اینکه آیا قبلاً submission.SUBMITTED داریم یا نه
@@ -419,13 +441,15 @@ async function submitExam(req, res, next) {
     // محاسبه‌ی نمره‌ی سؤالات تستی به‌صورت خودکار
     let totalScore = 0;
     let maxScore = 0;
+    let hasDescriptive = false;
     for (const q of submission.exam.questions) {
       maxScore += q.points || 1;
-      if (q.type === 'MULTIPLE_CHOICE') {
+      if (q.type === 'DESCRIPTIVE') {
+        hasDescriptive = true;
+      } else if (q.type === 'MULTIPLE_CHOICE') {
         const answer = submission.answers.find((a) => a.questionId === q.id);
         if (answer && answer.selectedOption === q.correctOption) {
           totalScore += q.points || 1;
-          // آپدیت نمره‌ی این پاسخ
           if (answer.score !== q.points) {
             await prisma.examAnswer.update({
               where: { id: answer.id },
@@ -441,22 +465,31 @@ async function submitExam(req, res, next) {
       }
     }
 
+    // اگر آزمون فقط سؤالات تستی دارد (تشریحی ندارد)، نمره نهایی خودکار تثبیت می‌شود
+    // و وضعیت به GRADED تغییر می‌کند — دیگر نیاز به تأیید مشاور نیست
+    const finalStatus = hasDescriptive ? 'SUBMITTED' : 'GRADED';
+    const gradedAt = hasDescriptive ? null : new Date();
+
     const updated = await prisma.examSubmission.update({
       where: { id },
       data: {
-        status: 'SUBMITTED',
+        status: finalStatus,
         submittedAt: new Date(),
         totalScore,
         maxScore,
+        gradedAt,
       },
     });
 
     res.json({
-      message: 'آزمون ارسال شد',
+      message: hasDescriptive
+        ? 'آزمون ارسال شد. سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.'
+        : 'آزمون ارسال شد و نمره‌ی نهایی خودکار ثبت شد.',
       submission: updated,
       autoScore: totalScore,
       maxScore,
-      note: 'سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.',
+      autoGraded: !hasDescriptive,
+      note: hasDescriptive ? 'سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.' : null,
     });
   } catch (err) {
     next(err);
@@ -495,6 +528,7 @@ async function getExamSubmissions(req, res, next) {
 }
 
 // نمره‌دهی به یک پاسخ تشریحی یا کل ارسال
+// نکته: پس از GRADED شدن، امکان تغییر نمره وجود ندارد
 async function gradeSubmission(req, res, next) {
   try {
     const { id } = req.params; // submissionId
@@ -509,6 +543,12 @@ async function gradeSubmission(req, res, next) {
     }
     if (submission.exam.advisorId !== req.user.id && req.user.role !== 'SUPERADMIN') {
       return res.status(403).json({ error: 'این ارسال متعلق به دانش‌آموز شما نیست' });
+    }
+    // جلوگیری از تغییر نمره پس از تثبیت
+    if (submission.status === 'GRADED') {
+      return res.status(400).json({
+        error: 'این ارسال قبلاً نمره داده شده و قابل تغییر نیست. نمره پس از تأیید نهایی، تثبیت می‌شود.',
+      });
     }
 
     // آپدیت نمره‌ی هر پاسخ (برای تشریحی)

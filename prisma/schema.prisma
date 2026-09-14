@@ -254,13 +254,16 @@ model Exam {
   description String?
   studentId   String   // دانش‌آموزی که آزمون برای اوست
   advisorId   String   // مشاوری که آزمون را ساخته
-  // روز و زمان شروع آزمون
+  // روز و زمان شروع آزمون — دانش‌آموز نمی‌تواند قبل از این زمان آزمون را شروع کند
   scheduledAt DateTime
   // مدت آزمون به دقیقه
   durationMinutes Int
-  // آیا آزمون برای دانش‌آموز نمایش داده شود؟
-  // اگر false باشد، آزمون تا زمان مشخص (scheduledAt) مخفی است
+  // آیا آزمون برای دانش‌آمور نمایش داده شود؟
+  // اگر false باشد، آزمون تا زمان visibleFrom مخفی است
   visibleToStudent Boolean @default(false)
+  // زمانی که آزمون برای دانش‌آموز نمایش داده می‌شود (فقط اگر visibleToStudent=false باشد)
+  // اگر null باشد، از scheduledAt استفاده می‌شود (یعنی تا زمان شروع آزمون مخفی است)
+  visibleFrom DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
