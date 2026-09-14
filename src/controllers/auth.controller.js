@@ -4,18 +4,85 @@ const { generateToken } = require('../utils/jwt');
 
 const SALT_ROUNDS = 10;
 
-// نرمال‌سازی شماره تماس: حذف فاصله‌ها و کاراکترهای اضافی، فقط اعداد و + در ابتدا
+// پیام راهنمای فرمت‌های قابل قبول شماره تماس ایران
+const PHONE_FORMAT_HINT =
+  'فرمت‌های قابل قبول: ۰۹۱۲۳۴۵۶۷۸۹، +۹۸۹۱۲۳۴۵۶۷۸۹، ۰۰۹۸۹۱۲۳۴۵۶۷۸۹، ۹۱۲۳۴۵۶۷۸۹';
+
+// نرمال‌سازی شماره تماس بر اساس فرمت ایران
+// فرمت‌های قابل قبول:
+//   09123456789      (موبایل با ۰)
+//   9123456789       (موبایل بدون ۰)
+//   +989123456789    (با کد کشور +)
+//   00989123456789   (با کد کشور ۰۰)
+//   989123456789     (با کد کشور بدون +)
+//   02112345678      (ثابت با ۰)
+//   2112345678       (ثابت بدون ۰)
+// خروجی همیشه به فرمت 09123456789 یا 02112345678 (با ۰ شروع می‌شود)
 function normalizePhone(value) {
   if (!value) return null;
   const trimmed = String(value).trim();
   if (!trimmed) return null;
-  // اگر با + شروع شد، فقط اعداد بعدش را نگه دار؛ در غیر این‌صورت فقط اعداد را نگه دار
-  const cleaned = trimmed.replace(/[^\d+]/g, '');
-  // حداقل طول منطقی برای شماره تلفن
-  if (cleaned.length < 6) {
-    throw new Error('شماره تماس معتبر نیست');
+
+  // تبدیل اعداد فارسی و عربی به انگلیسی
+  const faDigits = '۰۱۲۳۴۵۶۷۸۹';
+  const arDigits = '٠١٢٣٤٥٦٧٨٩';
+  let normalized = '';
+  for (const ch of trimmed) {
+    const faIdx = faDigits.indexOf(ch);
+    const arIdx = arDigits.indexOf(ch);
+    if (faIdx >= 0) normalized += String(faIdx);
+    else if (arIdx >= 0) normalized += String(arIdx);
+    else normalized += ch;
   }
-  return cleaned;
+
+  // حذف همه‌ی کاراکترهای غیر عددی (فاصله، خط تیره، پرانتز و ...)
+  // فقط + در ابتدا را نگه می‌داریم
+  let hasPlus = normalized.startsWith('+');
+  let digits = normalized.replace(/[^\d]/g, '');
+
+  if (digits.length === 0) {
+    throw new Error('شماره تماس خالی است. ' + PHONE_FORMAT_HINT);
+  }
+
+  // مدیریت پیشوندهای کد کشور ایران (۹۸)
+  if (hasPlus) {
+    // +989123456789 → 09123456789
+    if (digits.startsWith('98')) {
+      digits = '0' + digits.slice(2);
+    } else {
+      throw new Error('شماره با + شروع شده ولی کد کشور ۹۸ نیست. ' + PHONE_FORMAT_HINT);
+    }
+  } else if (digits.startsWith('0098')) {
+    // 00989123456789 → 09123456789
+    digits = '0' + digits.slice(4);
+  } else if (digits.startsWith('98') && digits.length === 12) {
+    // 989123456789 (12 رقم با 98 شروع می‌شود) → 09123456789
+    digits = '0' + digits.slice(2);
+  } else if (digits.length === 10 && digits.startsWith('9')) {
+    // 9123456789 (موبایل بدون ۰) → 09123456789
+    digits = '0' + digits;
+  } else if (digits.length === 10 && !digits.startsWith('0')) {
+    // 2112345678 (ثابت بدون ۰) → 02112345678
+    digits = '0' + digits;
+  }
+  // در غیر این‌صورت، اگر با ۰ شروع شده باشد همان را نگه می‌داریم
+
+  // اعتبارسنجی نهایی: باید ۱۱ رقم و با ۰ شروع شود
+  if (digits.length !== 11 || !digits.startsWith('0')) {
+    throw new Error('شماره تماس معتبر نیست. ' + PHONE_FORMAT_HINT);
+  }
+
+  // اعتبارسنجی پیشوندهای معتبر ایران:
+  // موبایل: 09 + (1,0,3,2,9) — مثلاً 0912, 0910, 0935, 0920, 0990
+  // ثابت: 0 + کد شهر — مثلاً 021 (تهران), 031 (اصفهان), 026 (کرج), 051 (مشهد)
+  const mobilePattern = /^09\d{9}$/;       // 09123456789
+  const landlinePattern = /^0\d{10}$/;    // 02112345678 (هر 11 رقمی با 0)
+
+  if (!mobilePattern.test(digits) && !landlinePattern.test(digits)) {
+    throw new Error('شماره تماس فرمت معتبری ندارد. ' + PHONE_FORMAT_HINT);
+  }
+
+  return digits;
 }
 
 // اعتبارسنجی ساده‌ی توضیحات: محدود به ۵۰۰ کاراکتر
