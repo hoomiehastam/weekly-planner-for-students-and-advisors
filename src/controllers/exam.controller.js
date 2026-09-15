@@ -3,117 +3,6 @@ const prisma = require('../config/prisma');
 // این کنترلر همه‌ی عملیات مربوط به آزمون‌ها را مدیریت می‌کند:
 // ساخت، مشاهده، شروع، ارسال پاسخ، و نمره‌دهی.
 
-// اعتبارسنجی و آماده‌سازی سؤالات آزمون.
-// اگر سؤال‌ها نامعتبر باشند یا خالی باشند، TypeError پرتاب می‌شود (با پیام فارسی).
-// در غیر این‌صورت آرایه‌ی آماده‌ی insert برمی‌گرداند.
-function validateQuestions(questions) {
-  if (!Array.isArray(questions) || questions.length === 0) {
-    throw new Error('حداقل یک سؤال وارد کنید');
-  }
-
-  return questions.map((q, i) => {
-    if (!q || !['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) {
-      throw new Error(`نوع سؤال ${i + 1} معتبر نیست`);
-    }
-    // متن یا عکس حداقل یکی باید باشد
-    const hasText = q.text && String(q.text).trim();
-    const hasImage = q.imageUrl && String(q.imageUrl).trim();
-    if (!hasText && !hasImage) {
-      throw new Error(`سؤال ${i + 1} باید متن یا عکس داشته باشد`);
-    }
-    if (q.type === 'MULTIPLE_CHOICE') {
-      if (!q.options || typeof q.options !== 'string') {
-        throw new Error(`گزینه‌های سؤال ${i + 1} الزامی است (با | جدا کنید)`);
-      }
-      const opts = q.options.split('|').map((s) => s.trim()).filter(Boolean);
-      if (opts.length < 2 || opts.length > 6) {
-        throw new Error(`سؤال ${i + 1} باید بین ۲ تا ۶ گزینه داشته باشد`);
-      }
-      if (!q.correctOption || q.correctOption < 1 || q.correctOption > opts.length) {
-        throw new Error(`گزینه‌ی صحیح سؤال ${i + 1} معتبر نیست`);
-      }
-    }
-    return {
-      type: q.type,
-      text: hasText ? String(q.text).trim() : null,
-      options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
-      correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
-      points: typeof q.points === 'number' ? q.points : 1,
-      imageUrl: q.imageUrl || null,
-      order: i,
-    };
-  });
-}
-
-// مهلت پایان آزمون؛ از زمان شروعِ ارسال + مدت آزمون (به میلی‌ثانیه عمل می‌کند)
-function getDeadline(submission, exam) {
-  const startedAt = new Date(submission.startedAt).getTime();
-  const durationMs = Number(exam.durationMinutes) * 60 * 1000;
-  return new Date(startedAt + durationMs);
-}
-
-// نهایی‌سازی یک ارسال: محاسبه‌ی نمره‌ی تستی، به‌روزرسانی پاسخ‌ها، و تغییر وضعیت.
-// اگر از قبل نهایی شده باشد، without change برمی‌گردد.
-// اگر سؤال تشریحی وجود داشته باشد وضعیت SUBMITTED می‌شود (تا مشاور نمره بدهد)،
-// در غیر این صورت GRADED (نمره‌ی خودکار تثبیت می‌شود).
-async function finalizeSubmission(submissionId) {
-  const submission = await prisma.examSubmission.findUnique({
-    where: { id: submissionId },
-    include: { exam: { include: { questions: true } }, answers: true },
-  });
-  if (!submission) {
-    throw new Error('ارسال آزمون یافت نشد');
-  }
-  if (submission.status !== 'IN_PROGRESS') {
-    return { already: true, submission };
-  }
-
-  let totalScore = 0;
-  let maxScore = 0;
-  let hasDescriptive = false;
-  const pendingAnswerUpdates = [];
-  for (const q of submission.exam.questions) {
-    maxScore += q.points || 1;
-    if (q.type === 'DESCRIPTIVE') {
-      hasDescriptive = true;
-    } else if (q.type === 'MULTIPLE_CHOICE') {
-      const answer = submission.answers.find((a) => a.questionId === q.id);
-      if (answer && answer.selectedOption === q.correctOption) {
-        totalScore += q.points || 1;
-        if (answer.score !== q.points) {
-          pendingAnswerUpdates.push({ id: answer.id, score: q.points || 1 });
-        }
-      } else if (answer && answer.score !== 0) {
-        pendingAnswerUpdates.push({ id: answer.id, score: 0 });
-      }
-    }
-  }
-  for (const u of pendingAnswerUpdates) {
-    await prisma.examAnswer.update({ where: { id: u.id }, data: { score: u.score } });
-  }
-
-  const finalStatus = hasDescriptive ? 'SUBMITTED' : 'GRADED';
-  const gradedAt = hasDescriptive ? null : new Date();
-  const updated = await prisma.examSubmission.update({
-    where: { id: submissionId },
-    data: {
-      status: finalStatus,
-      submittedAt: new Date(),
-      totalScore,
-      maxScore,
-      gradedAt,
-    },
-  });
-
-  return {
-    updated,
-    autoScore: totalScore,
-    maxScore,
-    autoGraded: !hasDescriptive,
-    hasDescriptive,
-  };
-}
-
 // ====== توابع مشاور ======
 
 // ساخت آزمون جدید برای یک دانش‌آموز
@@ -153,12 +42,34 @@ async function createExam(req, res, next) {
       return res.status(400).json({ error: 'مدت آزمون باید بین ۱ و ۶۰۰ دقیقه باشد' });
     }
 
-    // اعتبارسنجی و آماده‌سازی سؤال‌ها
-    let preparedQuestions;
-    try {
-      preparedQuestions = validateQuestions(questions);
-    } catch (err) {
-      return res.status(400).json({ error: err.message });
+    if (!Array.isArray(questions) || questions.length === 0) {
+      return res.status(400).json({ error: 'حداقل یک سؤال وارد کنید' });
+    }
+
+    // اعتبارسنجی سؤال‌ها
+    for (let i = 0; i < questions.length; i++) {
+      const q = questions[i];
+      if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) {
+        return res.status(400).json({ error: `نوع سؤال ${i + 1} معتبر نیست` });
+      }
+      // متن یا عکس حداقل یکی باید باشد
+      const hasText = q.text && q.text.trim();
+      const hasImage = q.imageUrl && q.imageUrl.trim();
+      if (!hasText && !hasImage) {
+        return res.status(400).json({ error: `سؤال ${i + 1} باید متن یا عکس داشته باشد` });
+      }
+      if (q.type === 'MULTIPLE_CHOICE') {
+        if (!q.options || typeof q.options !== 'string') {
+          return res.status(400).json({ error: `گزینه‌های سؤال ${i + 1} الزامی است (با | جدا کنید)` });
+        }
+        const opts = q.options.split('|').map((s) => s.trim()).filter(Boolean);
+        if (opts.length < 2 || opts.length > 6) {
+          return res.status(400).json({ error: `سؤال ${i + 1} باید بین ۲ تا ۶ گزینه داشته باشد` });
+        }
+        if (!q.correctOption || q.correctOption < 1 || q.correctOption > opts.length) {
+          return res.status(400).json({ error: `گزینه‌ی صحیح سؤال ${i + 1} معتبر نیست` });
+        }
+      }
     }
 
     const exam = await prisma.exam.create({
@@ -173,7 +84,15 @@ async function createExam(req, res, next) {
         // اگر visibleToStudent=false و visibleFrom ارسال شده، از آن استفاده کن؛ در غیر این‌صورت null (از scheduledAt استفاده می‌شود)
         visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
         questions: {
-          create: preparedQuestions,
+          create: questions.map((q, idx) => ({
+            type: q.type,
+            text: q.text ? q.text.trim() : null,
+            options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
+            correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
+            points: typeof q.points === 'number' ? q.points : 1,
+            imageUrl: q.imageUrl || null,
+            order: idx,
+          })),
         },
       },
       include: EXAM_INCLUDE_FOR_ADVISOR,
@@ -233,20 +152,28 @@ async function updateExam(req, res, next) {
       await prisma.exam.update({ where: { id }, data });
     }
 
-    // اگر سؤال‌ها ارسال شده، جایگزینی کامل.
-    // ابتدا اعتبارسنجی می‌شوند؛ اگر نامعتبر باشند، چیزی حذف نمی‌شود.
+    // اگر سؤال‌ها ارسال شده، جایگزینی کامل
     if (Array.isArray(questions)) {
-      let preparedQuestions;
-      try {
-        preparedQuestions = validateQuestions(questions);
-      } catch (err) {
-        return res.status(400).json({ error: err.message });
-      }
       await prisma.examQuestion.deleteMany({ where: { examId: id } });
-      if (preparedQuestions.length > 0) {
-        await prisma.examQuestion.createMany({
-          data: preparedQuestions.map((q) => ({ examId: id, ...q })),
-        });
+      if (questions.length > 0) {
+        for (let i = 0; i < questions.length; i++) {
+          const q = questions[i];
+          if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) continue;
+          // متن یا عکس حداقل یکی باید باشد
+          if (!q.text && !q.imageUrl) continue;
+          await prisma.examQuestion.create({
+            data: {
+              examId: id,
+              type: q.type,
+              text: q.text ? q.text.trim() : null,
+              options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
+              correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
+              points: typeof q.points === 'number' ? q.points : 1,
+              imageUrl: q.imageUrl || null,
+              order: i,
+            },
+          });
+        }
       }
     }
 
@@ -414,13 +341,6 @@ async function startExam(req, res, next) {
         },
         include: { answers: true },
       });
-    } else if (Date.now() > getDeadline(submission, exam).getTime()) {
-      // مهلت آزمون گذشته؛ پاسخ‌ها به‌صورت خودکار ارسال می‌شوند
-      const finalResult = await finalizeSubmission(submission.id);
-      return res.status(400).json({
-        error: 'زمان آزمون تمام شده و پاسخ‌ها به‌صورت خودکار ارسال شدند',
-        result: finalResult,
-      });
     }
 
     // پاسخ‌های ذخیره‌شده را به‌صورت map برمی‌گردانیم
@@ -434,7 +354,6 @@ async function startExam(req, res, next) {
 
     res.json({
       submission,
-      deadline: getDeadline(submission, exam),
       exam: {
         id: exam.id,
         title: exam.title,
@@ -463,10 +382,7 @@ async function saveAnswer(req, res, next) {
     const { id } = req.params; // submissionId
     const { questionId, selectedOption, textAnswer } = req.body;
 
-    const submission = await prisma.examSubmission.findUnique({
-      where: { id },
-      include: { exam: true },
-    });
+    const submission = await prisma.examSubmission.findUnique({ where: { id } });
     if (!submission) {
       return res.status(404).json({ error: 'ارسال آزمون یافت نشد' });
     }
@@ -475,11 +391,6 @@ async function saveAnswer(req, res, next) {
     }
     if (submission.status !== 'IN_PROGRESS') {
       return res.status(400).json({ error: 'این آزمون قبلاً ارسال شده و قابل تغییر نیست' });
-    }
-
-    // اگر مهلت آزمون گذشته باشد، دیگر جوابی ذخیره نمی‌شود
-    if (Date.now() > getDeadline(submission, submission.exam).getTime()) {
-      return res.status(400).json({ error: 'زمان آزمون تمام شده؛ امکان ذخیره‌ی پاسخ نیست' });
     }
 
     const question = await prisma.examQuestion.findUnique({ where: { id: questionId } });
@@ -516,7 +427,13 @@ async function submitExam(req, res, next) {
   try {
     const { id } = req.params; // submissionId
 
-    const submission = await prisma.examSubmission.findUnique({ where: { id } });
+    const submission = await prisma.examSubmission.findUnique({
+      where: { id },
+      include: {
+        exam: { include: { questions: true } },
+        answers: true,
+      },
+    });
 
     if (!submission) {
       return res.status(404).json({ error: 'ارسال آزمون یافت نشد' });
@@ -528,17 +445,58 @@ async function submitExam(req, res, next) {
       return res.status(400).json({ error: 'این آزمون قبلاً ارسال شده' });
     }
 
-    const result = await finalizeSubmission(id);
+    // محاسبه‌ی نمره‌ی سؤالات تستی به‌صورت خودکار
+    let totalScore = 0;
+    let maxScore = 0;
+    let hasDescriptive = false;
+    for (const q of submission.exam.questions) {
+      maxScore += q.points || 1;
+      if (q.type === 'DESCRIPTIVE') {
+        hasDescriptive = true;
+      } else if (q.type === 'MULTIPLE_CHOICE') {
+        const answer = submission.answers.find((a) => a.questionId === q.id);
+        if (answer && answer.selectedOption === q.correctOption) {
+          totalScore += q.points || 1;
+          if (answer.score !== q.points) {
+            await prisma.examAnswer.update({
+              where: { id: answer.id },
+              data: { score: q.points || 1 },
+            });
+          }
+        } else if (answer && answer.score !== 0) {
+          await prisma.examAnswer.update({
+            where: { id: answer.id },
+            data: { score: 0 },
+          });
+        }
+      }
+    }
+
+    // اگر آزمون فقط سؤالات تستی دارد (تشریحی ندارد)، نمره نهایی خودکار تثبیت می‌شود
+    // و وضعیت به GRADED تغییر می‌کند — دیگر نیاز به تأیید مشاور نیست
+    const finalStatus = hasDescriptive ? 'SUBMITTED' : 'GRADED';
+    const gradedAt = hasDescriptive ? null : new Date();
+
+    const updated = await prisma.examSubmission.update({
+      where: { id },
+      data: {
+        status: finalStatus,
+        submittedAt: new Date(),
+        totalScore,
+        maxScore,
+        gradedAt,
+      },
+    });
 
     res.json({
-      message: result.hasDescriptive
+      message: hasDescriptive
         ? 'آزمون ارسال شد. سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.'
         : 'آزمون ارسال شد و نمره‌ی نهایی خودکار ثبت شد.',
-      submission: result.updated,
-      autoScore: result.autoScore,
-      maxScore: result.maxScore,
-      autoGraded: result.autoGraded,
-      note: result.hasDescriptive ? 'سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.' : null,
+      submission: updated,
+      autoScore: totalScore,
+      maxScore,
+      autoGraded: !hasDescriptive,
+      note: hasDescriptive ? 'سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.' : null,
     });
   } catch (err) {
     next(err);
@@ -658,6 +616,4 @@ module.exports = {
   submitExam,
   getExamSubmissions,
   gradeSubmission,
-  validateQuestions,
-  getDeadline,
 };
