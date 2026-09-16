@@ -1,4 +1,4 @@
-const { toFaDigits, toLatinDigits } = require('../../../shared/fa-digits.mjs');
+const { toFaDigits, toLatinDigits } = require('./faDigits');
 
 // نرمال‌سازی و اعتبارسنجی شماره تماس و توضیحات (bio) بر اساس فرمت ایران
 // جدا از کنترلر auth تا به‌صورت واحد قابل تست باشد.
