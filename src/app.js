@@ -53,6 +53,12 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', service: 'konkur-backend' });
 });
 
+// ریشه‌ی سایت - Render با HEAD / سلامت سرویس را چک می‌کند و پاسخ
+// 200 لازم است تا خدمت «healthy» شناخته شود (Express خودش HEAD را از این GET پاسخ می‌دهد)
+app.get('/', (req, res) => {
+  res.json({ status: 'ok', service: 'konkur-backend' });
+});
+
 // مسیرهای فاز یک: ثبت‌نام و ورود، فهرست عمومی مشاوران، و بخش مدیریت سوپرادمین
 app.use('/api/auth', require('./routes/auth.routes'));
 app.use('/api/advisors', require('./routes/advisor.routes'));
