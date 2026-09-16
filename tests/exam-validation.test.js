@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 // تست‌های واحد برای اعتبارسنجی سؤالات آزمون و محاسبه‌ی مهلت
-const { validateQuestions, getDeadline } = require('../src/controllers/exam.controller');
+const { validateQuestions, getDeadline } = require('../src/utils/examValidation');
 
 test('validateQuestions: آرایه‌ی خالی باید خطا بدهد', () => {
   assert.throws(() => validateQuestions([]), /حداقل یک سؤال/);

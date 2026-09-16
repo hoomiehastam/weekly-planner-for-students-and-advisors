@@ -1,10 +1,52 @@
 const express = require('express');
 const cors = require('cors');
+const helmet = require('helmet');
+const cookieParser = require('cookie-parser');
+const rateLimit = require('express-rate-limit');
+const { requestLogger } = require('./config/logger');
 
 const app = express();
 
-app.use(cors());
-app.use(express.json());
+// هدرهای امنیتی پایه
+app.use(helmet());
+
+// محدودکردن مبدأ درخواست‌ها به فرانت‌اند مجاز
+// در حالت تولید از متغیر محیطی CORS_ORIGIN استفاده می‌شود (چند origin با کاما)
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+app.use(
+  cors({
+    origin(origin, cb) {
+      // درخواست‌های غیرمرورگری مثل curl یا سرورها origin ندارند؛ مجازند
+      if (!origin) return cb(null, true);
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(Object.assign(new Error('مبدأ درخواست مجاز نیست'), { status: 403 }));
+    },
+    credentials: true,
+  })
+);
+
+// رد سرعت درخواست‌های احراز هویت برای مقابله با brute force
+app.use(
+  '/api/auth',
+  rateLimit({
+    windowMs: 15 * 60 * 1000, // ۱۵ دقیقه
+    limit: 100,
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'تعداد درخواست‌های شما بیش از حد مجاز است؛ کمی بعد دوباره تلاش کنید' },
+  })
+);
+
+// محدودیت حجم بدنه‌ی درخواست — عکس‌های base64 سؤالات آزمون می‌توانند حجیم باشند
+app.use(express.json({ limit: '10mb' }));
+app.use(cookieParser());
+
+// لاگ‌گیری ساختاریافته‌ی همه‌ی درخواست‌ها
+app.use(requestLogger);
 
 // اندپوینت سلامت سرور - برای اطمینان از بالا بودن سرویس و اتصال درست
 app.get('/health', (req, res) => {
@@ -29,9 +71,12 @@ app.use((req, res) => {
 });
 
 // هندلر مرکزی خطا - هر throw ناگهانی در route ها اینجا گرفته می‌شود
+// و خطاهای قاب‌شناسایی (مثل ValidationError با status) با کد مناسب برمی‌گردند
 app.use((err, req, res, next) => {
-  console.error(err);
-  res.status(err.status || 500).json({
+  req.log?.error({ err }, 'درخواست ناموفق');
+  const status = err.status || 500;
+  if (status >= 500) console.error(err);
+  res.status(status).json({
     error: err.message || 'خطای داخلی سرور رخ داد',
   });
 });

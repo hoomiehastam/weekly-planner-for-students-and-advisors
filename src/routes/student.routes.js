@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth.middleware');
+const { validate, schemas } = require('../utils/validators');
 const {
   listMyStudents,
   getMyWeeklyGoal,
@@ -18,6 +19,12 @@ router.get('/me/weekly-goal', authenticate, requireRole('STUDENT'), getMyWeeklyG
 router.get('/me/advisor', authenticate, requireRole('STUDENT'), getMyAdvisor);
 
 // مشاور: تنظیم هدف هفتگی برای یک دانش‌آموز
-router.put('/:studentId/weekly-goal', authenticate, requireRole('ADVISOR', 'SUPERADMIN'), setStudentWeeklyGoal);
+router.put(
+  '/:studentId/weekly-goal',
+  authenticate,
+  requireRole('ADVISOR', 'SUPERADMIN'),
+  validate(schemas.weeklyGoal),
+  setStudentWeeklyGoal
+);
 
 module.exports = router;

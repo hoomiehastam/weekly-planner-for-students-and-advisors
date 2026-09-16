@@ -2,7 +2,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 // تست‌های واحد برای نرمال‌سازی شماره تماس و توضیحات
-const { normalizePhone, normalizeBio } = require('../src/controllers/auth.controller');
+const { normalizePhone, normalizeBio, validatePassword } = require('../src/utils/normalizers');
 
 test('normalizePhone: مقادیر خالی را null برمی‌گرداند', () => {
   assert.equal(normalizePhone(null), null);
@@ -58,4 +58,20 @@ test('normalizeBio: متن پاک‌سازی می‌شود', () => {
 
 test('normalizeBio: بیش از ۵۰۰ کاراکتر خطا می‌دهد', () => {
   assert.throws(() => normalizeBio('الف'.repeat(501)), /۵۰۰ کاراکتر/);
+});
+
+test('validatePassword: رمز کوتاه خطا می‌دهد', () => {
+  assert.throws(() => validatePassword('a1'), /۸ کاراکتر/);
+});
+
+test('validatePassword: بدون حرف خطا می‌دهد', () => {
+  assert.throws(() => validatePassword('12345678'), /یک حرف/);
+});
+
+test('validatePassword: بدون عدد خطا می‌دهد', () => {
+  assert.throws(() => validatePassword('abcdefgh'), /یک عدد/);
+});
+
+test('validatePassword: رمز معتبر پذیرفته می‌شود', () => {
+  assert.equal(validatePassword('konkur123'), 'konkur123');
 });

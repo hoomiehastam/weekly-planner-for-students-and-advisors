@@ -1,10 +1,14 @@
-const { verifyToken } = require('../utils/jwt');
+const { verifyToken, TOKEN_COOKIE } = require('../utils/jwt');
 const prisma = require('../config/prisma');
 
-// این میان‌افزار مطمئن می‌شود کاربر توکن معتبر فرستاده، سپس اطلاعات کاربر را روی درخواست قرار می‌دهد
+// این میان‌افزار مطمئن می‌شود کاربر توکن معتبر فرستاده، سپس اطلاعات کاربر را روی درخواست قرار می‌دهد.
+// توکن از دو جا خوانده می‌شود:
+//   ۱) کوکی httpOnly (روش اصلی فعلی)
+//   ۲) هدر Authorization: Bearer (برای سازگاری با کلاینت‌های قبلی و API های خارجی)
 async function authenticate(req, res, next) {
   const header = req.headers.authorization || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const bearerToken = header.startsWith('Bearer ') ? header.slice(7) : null;
+  const token = req.cookies?.[TOKEN_COOKIE] || bearerToken;
 
   if (!token) {
     return res.status(401).json({ error: 'ورود لازم است' });

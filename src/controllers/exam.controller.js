@@ -1,4 +1,6 @@
 const prisma = require('../config/prisma');
+const { validateQuestions, getDeadline } = require('../utils/examValidation');
+const { getPagination, paginationMeta } = require('../utils/pagination');
 
 // این کنترلر همه‌ی عملیات مربوط به آزمون‌ها را مدیریت می‌کند:
 // ساخت، مشاهده، شروع، ارسال پاسخ، و نمره‌دهی.
@@ -46,31 +48,8 @@ async function createExam(req, res, next) {
       return res.status(400).json({ error: 'حداقل یک سؤال وارد کنید' });
     }
 
-    // اعتبارسنجی سؤال‌ها
-    for (let i = 0; i < questions.length; i++) {
-      const q = questions[i];
-      if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) {
-        return res.status(400).json({ error: `نوع سؤال ${i + 1} معتبر نیست` });
-      }
-      // متن یا عکس حداقل یکی باید باشد
-      const hasText = q.text && q.text.trim();
-      const hasImage = q.imageUrl && q.imageUrl.trim();
-      if (!hasText && !hasImage) {
-        return res.status(400).json({ error: `سؤال ${i + 1} باید متن یا عکس داشته باشد` });
-      }
-      if (q.type === 'MULTIPLE_CHOICE') {
-        if (!q.options || typeof q.options !== 'string') {
-          return res.status(400).json({ error: `گزینه‌های سؤال ${i + 1} الزامی است (با | جدا کنید)` });
-        }
-        const opts = q.options.split('|').map((s) => s.trim()).filter(Boolean);
-        if (opts.length < 2 || opts.length > 6) {
-          return res.status(400).json({ error: `سؤال ${i + 1} باید بین ۲ تا ۶ گزینه داشته باشد` });
-        }
-        if (!q.correctOption || q.correctOption < 1 || q.correctOption > opts.length) {
-          return res.status(400).json({ error: `گزینه‌ی صحیح سؤال ${i + 1} معتبر نیست` });
-        }
-      }
-    }
+    // اعتبارسنجی و نرمال‌سازی سؤال‌ها (منبع مشترک: utils/examValidation.js)
+    const normalizedQuestions = validateQuestions(questions);
 
     const exam = await prisma.exam.create({
       data: {
@@ -84,15 +63,7 @@ async function createExam(req, res, next) {
         // اگر visibleToStudent=false و visibleFrom ارسال شده، از آن استفاده کن؛ در غیر این‌صورت null (از scheduledAt استفاده می‌شود)
         visibleFrom: visibleFrom ? new Date(visibleFrom) : null,
         questions: {
-          create: questions.map((q, idx) => ({
-            type: q.type,
-            text: q.text ? q.text.trim() : null,
-            options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
-            correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
-            points: typeof q.points === 'number' ? q.points : 1,
-            imageUrl: q.imageUrl || null,
-            order: idx,
-          })),
+          create: normalizedQuestions,
         },
       },
       include: EXAM_INCLUDE_FOR_ADVISOR,
@@ -152,27 +123,13 @@ async function updateExam(req, res, next) {
       await prisma.exam.update({ where: { id }, data });
     }
 
-    // اگر سؤال‌ها ارسال شده، جایگزینی کامل
+    // اگر سؤال‌ها ارسال شده، جایگزینی کامل (با اعتبارسنجی مشترک)
     if (Array.isArray(questions)) {
       await prisma.examQuestion.deleteMany({ where: { examId: id } });
       if (questions.length > 0) {
-        for (let i = 0; i < questions.length; i++) {
-          const q = questions[i];
-          if (!['MULTIPLE_CHOICE', 'DESCRIPTIVE'].includes(q.type)) continue;
-          // متن یا عکس حداقل یکی باید باشد
-          if (!q.text && !q.imageUrl) continue;
-          await prisma.examQuestion.create({
-            data: {
-              examId: id,
-              type: q.type,
-              text: q.text ? q.text.trim() : null,
-              options: q.type === 'MULTIPLE_CHOICE' ? q.options : null,
-              correctOption: q.type === 'MULTIPLE_CHOICE' ? q.correctOption : null,
-              points: typeof q.points === 'number' ? q.points : 1,
-              imageUrl: q.imageUrl || null,
-              order: i,
-            },
-          });
+        const normalizedQuestions = validateQuestions(questions);
+        for (const q of normalizedQuestions) {
+          await prisma.examQuestion.create({ data: { examId: id, ...q } });
         }
       }
     }
@@ -219,8 +176,22 @@ async function getExamsForStudent(req, res, next) {
       return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
     }
 
+    const where = { studentId };
+    const pagination = getPagination(req);
+    if (pagination) {
+      const total = await prisma.exam.count({ where });
+      const exams = await prisma.exam.findMany({
+        where,
+        include: EXAM_INCLUDE_FOR_ADVISOR,
+        orderBy: { scheduledAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      });
+      return res.json({ exams, ...paginationMeta(total, pagination) });
+    }
+
     const exams = await prisma.exam.findMany({
-      where: { studentId },
+      where,
       include: EXAM_INCLUDE_FOR_ADVISOR,
       orderBy: { scheduledAt: 'desc' },
     });
@@ -237,38 +208,59 @@ async function getExamsForStudent(req, res, next) {
 async function getMyExams(req, res, next) {
   try {
     const now = new Date();
-    // همه‌ی آزمون‌های دانش‌آموز را می‌گیریم و در JS فیلتر می‌کنیم، چون منطق visibility پیچیده است
-    const allExams = await prisma.exam.findMany({
-      where: { studentId: req.user.id },
-      include: {
-        questions: {
-          orderBy: { order: 'asc' },
-          select: {
-            id: true,
-            type: true,
-            text: true,
-            options: true,
-            points: true,
-            order: true,
-            imageUrl: true,
-          },
+    // فیلتر visibility به‌صورت native در دیتابیس:
+    // - اگر visibleToStudent=true → همیشه نمایش بده
+    // - اگر visibleToStudent=false و visibleFrom!=null → فقط اگه visibleFrom <= now
+    // - اگر visibleToStudent=false و visibleFrom=null → فقط اگه scheduledAt <= now
+    const where = {
+      studentId: req.user.id,
+      OR: [
+        { visibleToStudent: true },
+        {
+          visibleToStudent: false,
+          OR: [
+            { visibleFrom: { lte: now } },
+            { visibleFrom: null, scheduledAt: { lte: now } },
+          ],
         },
-        submissions: {
-          where: { studentId: req.user.id },
-          include: { answers: true },
+      ],
+    };
+    const include = {
+      questions: {
+        orderBy: { order: 'asc' },
+        select: {
+          id: true,
+          type: true,
+          text: true,
+          options: true,
+          points: true,
+          order: true,
+          imageUrl: true,
         },
       },
-      orderBy: { scheduledAt: 'desc' },
-    });
+      submissions: {
+        where: { studentId: req.user.id },
+        include: { answers: true },
+      },
+    };
 
-    // فیلتر visibility:
-    // - اگر visibleToStudent=true → همیشه نمایش بده
-    // - اگر visibleToStudent=false و visibleFrom=null → فقط اگه scheduledAt <= now
-    // - اگر visibleToStudent=false و visibleFrom!=null → فقط اگه visibleFrom <= now
-    const exams = allExams.filter((exam) => {
-      if (exam.visibleToStudent) return true;
-      const showTime = exam.visibleFrom || exam.scheduledAt;
-      return showTime <= now;
+    const pagination = getPagination(req);
+    if (pagination) {
+      const total = await prisma.exam.count({ where });
+      const exams = await prisma.exam.findMany({
+        where,
+        include,
+        orderBy: { scheduledAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      });
+      return res.json({ exams, ...paginationMeta(total, pagination) });
+    }
+
+    const exams = await prisma.exam.findMany({
+      where,
+      include,
+      orderBy: { scheduledAt: 'desc' },
     });
 
     res.json({ exams });
@@ -382,7 +374,10 @@ async function saveAnswer(req, res, next) {
     const { id } = req.params; // submissionId
     const { questionId, selectedOption, textAnswer } = req.body;
 
-    const submission = await prisma.examSubmission.findUnique({ where: { id } });
+    const submission = await prisma.examSubmission.findUnique({
+      where: { id },
+      include: { exam: { select: { durationMinutes: true } } },
+    });
     if (!submission) {
       return res.status(404).json({ error: 'ارسال آزمون یافت نشد' });
     }
@@ -391,6 +386,14 @@ async function saveAnswer(req, res, next) {
     }
     if (submission.status !== 'IN_PROGRESS') {
       return res.status(400).json({ error: 'این آزمون قبلاً ارسال شده و قابل تغییر نیست' });
+    }
+
+    // ممنوعیت تغییر پاسخ پس از پایان مهلت آزمون (شروع + مدت)
+    const deadline = getDeadline(submission, submission.exam);
+    if (new Date() > deadline) {
+      return res.status(403).json({
+        error: 'زمان آزمون به پایان رسیده است و امکان تغییر پاسخ وجود ندارد',
+      });
     }
 
     const question = await prisma.examQuestion.findUnique({ where: { id: questionId } });
@@ -445,31 +448,39 @@ async function submitExam(req, res, next) {
       return res.status(400).json({ error: 'این آزمون قبلاً ارسال شده' });
     }
 
-    // محاسبه‌ی نمره‌ی سؤالات تستی به‌صورت خودکار
+    // محاسبه‌ی نمره‌ی سؤالات تستی به‌صورت خودکار.
+    // به‌جای حلقه‌ی Answers.find درون حلقه (O(n²)) از Map استفاده می‌کنیم و
+    // به‌روزرسانی‌ها را یکجا در یک transaction می‌فرستیم (بدون N+1).
     let totalScore = 0;
     let maxScore = 0;
     let hasDescriptive = false;
+    const answerByQuestion = new Map(
+      submission.answers.map((a) => [a.questionId, a])
+    );
+    const scoreUpdates = [];
     for (const q of submission.exam.questions) {
       maxScore += q.points || 1;
       if (q.type === 'DESCRIPTIVE') {
         hasDescriptive = true;
       } else if (q.type === 'MULTIPLE_CHOICE') {
-        const answer = submission.answers.find((a) => a.questionId === q.id);
-        if (answer && answer.selectedOption === q.correctOption) {
-          totalScore += q.points || 1;
-          if (answer.score !== q.points) {
-            await prisma.examAnswer.update({
-              where: { id: answer.id },
-              data: { score: q.points || 1 },
-            });
+        const answer = answerByQuestion.get(q.id);
+        if (answer) {
+          const expected =
+            answer.selectedOption === q.correctOption ? q.points || 1 : 0;
+          if (answer.selectedOption === q.correctOption) totalScore += expected;
+          if (answer.score !== expected) {
+            scoreUpdates.push({ id: answer.id, score: expected });
           }
-        } else if (answer && answer.score !== 0) {
-          await prisma.examAnswer.update({
-            where: { id: answer.id },
-            data: { score: 0 },
-          });
         }
       }
+    }
+
+    if (scoreUpdates.length > 0) {
+      await prisma.$transaction(
+        scoreUpdates.map((u) =>
+          prisma.examAnswer.update({ where: { id: u.id }, data: { score: u.score } })
+        )
+      );
     }
 
     // اگر آزمون فقط سؤالات تستی دارد (تشریحی ندارد)، نمره نهایی خودکار تثبیت می‌شود
@@ -488,6 +499,10 @@ async function submitExam(req, res, next) {
       },
     });
 
+    // پذیرش ارسال حتی پس از مهلت (فرصت برای ارسال نهایی)، اما مشخص‌کردن تأخیر در پاسخ
+    const deadline = getDeadline(submission, submission.exam);
+    const late = new Date() > deadline;
+
     res.json({
       message: hasDescriptive
         ? 'آزمون ارسال شد. سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.'
@@ -496,6 +511,8 @@ async function submitExam(req, res, next) {
       autoScore: totalScore,
       maxScore,
       autoGraded: !hasDescriptive,
+      deadline,
+      late,
       note: hasDescriptive ? 'سؤالات تشریحی نیاز به نمره‌دهی توسط مشاور دارند.' : null,
     });
   } catch (err) {
@@ -518,17 +535,35 @@ async function getExamSubmissions(req, res, next) {
       return res.status(403).json({ error: 'این آزمون متعلق به شما نیست' });
     }
 
-    const submissions = await prisma.examSubmission.findMany({
-      where: { examId },
-      include: {
-        answers: {
-          include: { question: true },
+    const where = { examId };
+    const pagination = getPagination(req);
+    let submissions, total;
+    if (pagination) {
+      total = await prisma.examSubmission.count({ where });
+      submissions = await prisma.examSubmission.findMany({
+        where,
+        include: {
+          answers: {
+            include: { question: true },
+          },
         },
-      },
-      orderBy: { submittedAt: 'desc' },
-    });
+        orderBy: { submittedAt: 'desc' },
+        skip: pagination.skip,
+        take: pagination.take,
+      });
+    } else {
+      submissions = await prisma.examSubmission.findMany({
+        where,
+        include: {
+          answers: {
+            include: { question: true },
+          },
+        },
+        orderBy: { submittedAt: 'desc' },
+      });
+    }
 
-    res.json({ exam, submissions });
+    res.json({ exam, submissions, ...paginationMeta(total, pagination) });
   } catch (err) {
     next(err);
   }
@@ -558,15 +593,20 @@ async function gradeSubmission(req, res, next) {
       });
     }
 
-    // آپدیت نمره‌ی هر پاسخ (برای تشریحی)
-    if (Array.isArray(answers)) {
-      for (const a of answers) {
-        if (a.score !== undefined) {
-          await prisma.examAnswer.updateMany({
-            where: { id: a.id, submissionId: id },
-            data: { score: a.score },
-          });
-        }
+    // آپدیت نمره‌ی هر پاسخ (برای تشریحی) — یکجا در transaction برای جلوگیری از N+1
+    if (Array.isArray(answers) && answers.length > 0) {
+      const gradedAnswers = answers.filter(
+        (a) => a.id && a.score !== undefined && Number.isFinite(Number(a.score))
+      );
+      if (gradedAnswers.length > 0) {
+        await prisma.$transaction(
+          gradedAnswers.map((a) =>
+            prisma.examAnswer.updateMany({
+              where: { id: a.id, submissionId: id },
+              data: { score: Number(a.score) },
+            })
+          )
+        );
       }
     }
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, requireRole } = require('../middleware/auth.middleware');
+const { validate, schemas } = require('../utils/validators');
 const {
   createExam,
   updateExam,
@@ -27,7 +28,7 @@ router.put('/submissions/:id/grade', requireRole('ADVISOR', 'SUPERADMIN'), grade
 // ====== مسیرهای دانش‌آموز ======
 router.get('/mine', requireRole('STUDENT'), getMyExams);
 router.post('/:id/start', requireRole('STUDENT'), startExam);
-router.post('/submissions/:id/save', requireRole('STUDENT'), saveAnswer);
+router.post('/submissions/:id/save', requireRole('STUDENT'), validate(schemas.saveAnswer), saveAnswer);
 router.post('/submissions/:id/submit', requireRole('STUDENT'), submitExam);
 
 module.exports = router;

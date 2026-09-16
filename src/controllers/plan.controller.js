@@ -32,9 +32,145 @@ function validateNullableInt(value) {
   return n;
 }
 
+// اعتبارسنجی تگ‌ها: فقط تگ‌های پیش‌فرض یا تگ‌های شخصی همین مشاور (یا سوپرادمین) قابل انتساب‌اند
+async function assertTagsValid(db, tags, advisorId) {
+  if (!tags || tags.length === 0) return;
+  const unique = [...new Set(tags.map((t) => String(t)).filter(Boolean))];
+  if (unique.length === 0) return;
+  const count = await db.tag.count({
+    where: { id: { in: unique }, OR: [{ isDefault: true }, { advisorId }] },
+  });
+  if (count !== unique.length) {
+    throw new Error('یک یا چند تگ نامعتبر یا متعلق به شما نیست');
+  }
+}
+
+// نرمال‌سازی یک آیتم ورودی به ساختار پایدار برای ساخت/به‌روزرسانی
+function toItemInput(it, idx) {
+  const tags = Array.isArray(it.tags)
+    ? [...new Set(it.tags.map((t) => (t == null ? '' : String(t))).filter(Boolean))]
+    : [];
+  return {
+    id: it.id || null,
+    subject: String(it.subject?.trim() || ''),
+    description: it.description ? String(it.description).trim() : null,
+    startTime: validateTime(it.startTime),
+    endTime: validateTime(it.endTime),
+    order: typeof it.order === 'number' ? it.order : idx,
+    tags,
+  };
+}
+
+// ساخت داده‌ی Prisma برای آیتم جدید (روز موجود یا روز تازه)
+function itemCreateData(it) {
+  const data = {
+    subject: it.subject,
+    description: it.description,
+    startTime: it.startTime,
+    endTime: it.endTime,
+    order: it.order,
+  };
+  if (it.tags.length > 0) {
+    data.tags = { create: it.tags.map((tagId) => ({ tagId })) };
+  }
+  return data;
+}
+
+// جایگزینی diff محور روزها و آیتم‌های یک برنامه در یک تراکنش.
+// آیتم‌هایی که شناسه دارند به‌روزرسانی می‌شوند و فیلدهای دانش‌آموز
+// (status، actualMinutes، testsTaken و لاگ‌های per-tag) دست‌نخورده می‌مانند.
+async function replaceDays(tx, { planId, advisorId, days }) {
+  const incomingDays = days.map((d) => ({
+    dayOfWeek: validateDayOfWeek(d.dayOfWeek),
+    items: (d.items || []).map((it, idx) => toItemInput(it, idx)),
+  }));
+
+  // اعتبارسنجی متمرکز همه‌ی تگ‌ها قبل از هر تغییری
+  for (const day of incomingDays) {
+    for (const item of day.items) {
+      await assertTagsValid(tx, item.tags, advisorId);
+    }
+  }
+
+  const existingDays = await tx.planDay.findMany({
+    where: { planId },
+    include: { items: { include: { tags: true } } },
+  });
+  const daysByDOW = new Map(existingDays.map((d) => [d.dayOfWeek, d]));
+  const incomingDOWs = new Set(incomingDays.map((d) => d.dayOfWeek));
+
+  // حذف روزهایی که دیگر در درخواست نیستند (cascade آیتم‌ها و لاگ‌هایشان را هم می‌گیرد)
+  const daysToDelete = existingDays.filter((d) => !incomingDOWs.has(d.dayOfWeek));
+  if (daysToDelete.length > 0) {
+    await tx.planDay.deleteMany({ where: { id: { in: daysToDelete.map((d) => d.id) } } });
+  }
+
+  for (const incoming of incomingDays) {
+    const existingDay = daysByDOW.get(incoming.dayOfWeek);
+
+    // روز کاملاً جدید
+    if (!existingDay) {
+      await tx.planDay.create({
+        data: {
+          planId,
+          dayOfWeek: incoming.dayOfWeek,
+          items: { create: incoming.items.map((it) => itemCreateData(it)) },
+        },
+      });
+      continue;
+    }
+
+    const existingItems = existingDay.items;
+    const existingById = new Map(existingItems.map((it) => [it.id, it]));
+
+    const toUpdate = incoming.items.filter((it) => it.id && existingById.has(it.id));
+    const toCreate = incoming.items.filter((it) => !(it.id && existingById.has(it.id)));
+    const keptIds = new Set(toUpdate.map((it) => it.id));
+
+    // به‌روزرسانی آیتم‌های حفظ‌شده — فقط فیلدهای ساختاری؛ وضعیت و لاگ‌ها دست نمی‌خورد
+    for (const it of toUpdate) {
+      await tx.planItem.update({
+        where: { id: it.id },
+        data: {
+          subject: it.subject,
+          description: it.description,
+          startTime: it.startTime,
+          endTime: it.endTime,
+          order: it.order,
+        },
+      });
+
+      // همگام‌سازی تگ‌ها
+      const currentTagIds = new Set(existingById.get(it.id).tags.map((t) => t.tagId));
+      const nextTagIds = new Set(it.tags);
+      const toRemove = [...currentTagIds].filter((t) => !nextTagIds.has(t));
+      const toAdd = [...nextTagIds].filter((t) => !currentTagIds.has(t));
+      if (toRemove.length > 0) {
+        await tx.planItemTag.deleteMany({ where: { itemId: it.id, tagId: { in: toRemove } } });
+      }
+      for (const tagId of toAdd) {
+        await tx.planItemTag.create({ data: { itemId: it.id, tagId } });
+      }
+    }
+
+    // ساخت آیتم‌های جدید
+    for (const it of toCreate) {
+      await tx.planItem.create({ data: itemCreateData(it) });
+    }
+
+    // حذف آیتم‌های روز که دیگر در درخواست نیستند
+    const toDeleteIds = existingItems
+      .map((it) => it.id)
+      .filter((idStr) => !keptIds.has(idStr));
+    if (toDeleteIds.length > 0) {
+      await tx.planItem.deleteMany({ where: { id: { in: toDeleteIds } } });
+    }
+  }
+}
+
 // یک برنامه‌ی مطالعاتی جدید می‌سازد؛ همراه با روزها و آیتم‌ها و تگ‌ها
 // بدنه‌ی درخواست:
-//   { title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, description?, startTime?, endTime?, tags: [tagId] }] }] }
+//   { studentId, title, note?, startsAt, expiresAt?, days: [{ dayOfWeek, items: [{ subject, description?, startTime?, endTime?, tags: [tagId] }] }] }
 async function createPlan(req, res, next) {
   try {
     const { studentId, title, note, startsAt, expiresAt, days = [] } = req.body;
@@ -51,11 +187,21 @@ async function createPlan(req, res, next) {
       return res.status(403).json({ error: 'این دانش‌آموز به شما متصل نیست' });
     }
 
-    // ساخت برنامه همراه با روزها و آیتم‌ها در یک تراکنش
+    // اعتبارسنجی تگ‌ها قبل از ساخت
+    for (const d of days) {
+      for (const item of d.items || []) {
+        await assertTagsValid(
+          prisma,
+          (Array.isArray(item.tags) ? item.tags : []).map((t) => String(t)),
+          req.user.id
+        );
+      }
+    }
+
     const plan = await prisma.studyPlan.create({
       data: {
-        title: title.trim(),
-        note: note ? note.trim() : null,
+        title: String(title).trim(),
+        note: note ? String(note).trim() : null,
         studentId,
         advisorId: req.user.id,
         startsAt: new Date(startsAt),
@@ -64,21 +210,7 @@ async function createPlan(req, res, next) {
           create: days.map((d) => ({
             dayOfWeek: validateDayOfWeek(d.dayOfWeek),
             items: {
-              create: (d.items || []).map((it, idx) => {
-                const data = {
-                  subject: it.subject?.trim() || '',
-                  description: it.description ? it.description.trim() : null,
-                  startTime: validateTime(it.startTime),
-                  endTime: validateTime(it.endTime),
-                  order: typeof it.order === 'number' ? it.order : idx,
-                };
-                if (Array.isArray(it.tags) && it.tags.length > 0) {
-                  data.tags = {
-                    create: it.tags.map((tagId) => ({ tagId })),
-                  };
-                }
-                return data;
-              }),
+              create: (d.items || []).map((it, idx) => itemCreateData(toItemInput(it, idx))),
             },
           })),
         },
@@ -92,14 +224,15 @@ async function createPlan(req, res, next) {
   }
 }
 
-// ویرایش کامل یک برنامه‌ی موجود:
-//  - عنوان، توضیح، بازه‌ی زمانی به‌روز می‌شود
-//  - روزها و آیتم‌ها به‌صورت جایگزینی کامل (replace) ذخیره می‌شوند
-//  - برای آیتم‌هایی که شناسه دارند، وضعیت و مقادیر ثبت‌شده‌ی دانش‌آموز (actualMinutes، testsTaken) حفظ می‌شود
+// ویرایش برنامه‌ی موجود به‌صورت diff محور:
+//   - عنوان، توضیح، بازه‌ی زمانی به‌روز می‌شود
+//   - آیتم‌های دارای شناسه به‌روزرسانی می‌شوند و داده‌های ثبت‌شده‌ی دانش‌آموز
+//     (status، actualMinutes، testsTaken و لاگ‌های per-tag) حفظ می‌شوند
+//   - آیتم‌های جدید ساخته و آیتم‌های حذف‌شده پاک می‌شوند
 async function updatePlan(req, res, next) {
   try {
     const { id } = req.params;
-    const { title, note, startsAt, expiresAt, days = [] } = req.body;
+    const { title, note, startsAt, expiresAt, days } = req.body;
 
     const existing = await prisma.studyPlan.findUnique({ where: { id } });
     if (!existing) {
@@ -109,78 +242,28 @@ async function updatePlan(req, res, next) {
       return res.status(403).json({ error: 'این برنامه متعلق به شما نیست' });
     }
 
-    // مرحله‌ی ۱: به‌روزرسانی فیلدهای بالایی برنامه
     const updatedPlanFields = {};
-    if (title !== undefined) updatedPlanFields.title = String(title).trim();
+    if (title !== undefined) {
+      const t = String(title).trim();
+      if (!t) return res.status(400).json({ error: 'عنوان برنامه نمی‌تواند خالی باشد' });
+      updatedPlanFields.title = t;
+    }
     if (note !== undefined) updatedPlanFields.note = note ? String(note).trim() : null;
     if (startsAt !== undefined) updatedPlanFields.startsAt = new Date(startsAt);
     if (expiresAt !== undefined) {
       updatedPlanFields.expiresAt = expiresAt ? new Date(expiresAt) : null;
     }
 
-    if (Object.keys(updatedPlanFields).length > 0) {
-      await prisma.studyPlan.update({ where: { id }, data: updatedPlanFields });
-    }
-
-    // مرحله‌ی ۲: اگر days ارسال شده، کل روزها و آیتم‌ها را جایگزین می‌کنیم
-    // اما برای حفظ داده‌های دانش‌آموز، همه‌ی فیلدهای قدیمی را نگه می‌داریم:
-    //   - status (وضعیت انجام‌شده)
-    //   - actualMinutes (دقیقه‌ی واقعی مطالعه)
-    //   - testsTaken (تعداد تست‌های زده‌شده)
-    if (Array.isArray(days)) {
-      const oldItems = await prisma.planItem.findMany({
-        where: { day: { planId: id } },
-        select: { id: true, status: true, actualMinutes: true, testsTaken: true },
-      });
-      const oldDataById = new Map(oldItems.map((it) => [it.id, it]));
-
-      // پاک کردن همه‌ی روزها و آیتم‌های قبلی (cascade از PlanDay به PlanItem و PlanItemTag)
-      await prisma.planDay.deleteMany({ where: { planId: id } });
-
-      // ساخت دوباره‌ی روزها و آیتم‌ها
-      if (days.length > 0) {
-        await prisma.studyPlan.update({
-          where: { id },
-          data: {
-            days: {
-              create: days.map((d) => ({
-                dayOfWeek: validateDayOfWeek(d.dayOfWeek),
-                items: {
-                  create: (d.items || []).map((it, idx) => {
-                    const data = {
-                      subject: it.subject?.trim() || '',
-                      description: it.description ? it.description.trim() : null,
-                      startTime: validateTime(it.startTime),
-                      endTime: validateTime(it.endTime),
-                      order: typeof it.order === 'number' ? it.order : idx,
-                    };
-
-                    // اگر آیتم شناسه داشت و هنوز موجود است، وضعیت و مقادیر دانش‌آموز را حفظ کن
-                    if (it.id && oldDataById.has(it.id)) {
-                      const old = oldDataById.get(it.id);
-                      data.status = old.status;
-                      data.actualMinutes = old.actualMinutes;
-                      data.testsTaken = old.testsTaken;
-                    }
-
-                    if (Array.isArray(it.tags) && it.tags.length > 0) {
-                      data.tags = {
-                        create: it.tags.map((tagId) => ({ tagId })),
-                      };
-                    }
-                    return data;
-                  }),
-                },
-              })),
-            },
-          },
-        });
+    const plan = await prisma.$transaction(async (tx) => {
+      if (Object.keys(updatedPlanFields).length > 0) {
+        await tx.studyPlan.update({ where: { id }, data: updatedPlanFields });
       }
-    }
 
-    const plan = await prisma.studyPlan.findUnique({
-      where: { id },
-      include: PLAN_INCLUDE,
+      if (Array.isArray(days)) {
+        await replaceDays(tx, { planId: id, advisorId: req.user.id, days });
+      }
+
+      return tx.studyPlan.findUnique({ where: { id }, include: PLAN_INCLUDE });
     });
 
     res.json({ plan });
